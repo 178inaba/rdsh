@@ -30,7 +30,7 @@ SQL
 ## Timeouts and exit codes
 
 - The 90 s default timeout suits synchronous runs. Exit code 124 means the query timed out (the server-side job is cancelled best-effort): re-run with a longer `--timeout` (e.g. `10m`) in a background shell. `--timeout 0` (unlimited) is for background runs only.
-- Any other failure exits 1 (e.g. a SQL error, printed to stderr) — fix the query rather than retrying with a longer timeout.
+- Any other failure exits 1. Read stderr before acting: a SQL error means fix the query; an auth, network, or configuration error means fix the environment or stop and report. Neither is solved by retrying with a longer timeout.
 
 ## Profiles
 

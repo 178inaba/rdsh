@@ -40,12 +40,13 @@ The repository ships an [Agent Skill](skills/rdsh/SKILL.md) that teaches AI codi
 
 ```sh
 git clone https://github.com/178inaba/rdsh.git
-cp -R rdsh/skills/rdsh ~/.claude/skills/rdsh
+mkdir -p ~/.claude/skills
+cp -R rdsh/skills/rdsh ~/.claude/skills/
 ```
 
 Copying works even if you delete the clone afterwards. If you keep a clone and want the skill to track updates, symlink it instead:
 
 ```sh
+mkdir -p ~/.claude/skills
 ln -s "$(pwd)/rdsh/skills/rdsh" ~/.claude/skills/rdsh
 ```
-
