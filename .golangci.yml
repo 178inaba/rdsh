@@ -1,0 +1,13 @@
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      # Informational writes to stdout/stderr and best-effort cleanup where
+      # there is no meaningful recovery from a failure.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - os.Unsetenv
+        - (io.ReadCloser).Close
