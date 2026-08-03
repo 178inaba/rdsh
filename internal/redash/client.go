@@ -234,7 +234,11 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if out == nil {
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	dec := json.NewDecoder(resp.Body)
+	// Keep numbers as json.Number so large integers survive the round trip
+	// to CSV/JSON output instead of degrading to float64.
+	dec.UseNumber()
+	if err := dec.Decode(out); err != nil {
 		return fmt.Errorf("%s %s: decode response: %w", method, path, err)
 	}
 	return nil
