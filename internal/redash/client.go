@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -36,11 +37,13 @@ type Client struct {
 	httpc   *http.Client
 }
 
-// NewClient returns a client for the Redash instance at baseURL.
+// NewClient returns a client for the Redash instance at baseURL. A trailing
+// slash is trimmed so env-pair and hand-edited config URLs do not produce
+// double-slash request paths.
 func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
 		PollInterval: time.Second,
-		baseURL:      baseURL,
+		baseURL:      strings.TrimRight(baseURL, "/"),
 		apiKey:       apiKey,
 		httpc:        &http.Client{},
 	}

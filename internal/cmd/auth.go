@@ -59,6 +59,9 @@ func runAuthLogin(cmd *cobra.Command, _ []string) error {
 	if url == "" {
 		return errors.New("URL must not be empty")
 	}
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		return fmt.Errorf("URL %q must start with http:// or https://", url)
+	}
 
 	key, err := promptAPIKey(reader, errOut, stdinFile)
 	if err != nil {

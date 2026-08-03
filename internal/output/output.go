@@ -18,6 +18,16 @@ const (
 	FormatJSON = "json"
 )
 
+// ValidateFormat rejects unsupported format names. Commands call it before
+// doing expensive work so a typo fails before the query is submitted.
+func ValidateFormat(format string) error {
+	switch format {
+	case FormatCSV, FormatTSV, FormatJSON:
+		return nil
+	}
+	return fmt.Errorf("unsupported format %q (supported: csv, tsv, json)", format)
+}
+
 // Write renders the result in the given format. Rows arrive as maps keyed
 // by column name, so CSV/TSV column order is taken from result.Columns.
 func Write(w io.Writer, format string, result *redash.QueryResult) error {
@@ -29,7 +39,7 @@ func Write(w io.Writer, format string, result *redash.QueryResult) error {
 	case FormatJSON:
 		return writeJSON(w, result)
 	default:
-		return fmt.Errorf("unsupported format %q (supported: csv, tsv, json)", format)
+		return ValidateFormat(format)
 	}
 }
 

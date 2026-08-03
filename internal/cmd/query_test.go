@@ -22,6 +22,7 @@ type fakeServer struct {
 	neverDone     bool // job stays PENDING forever; used by timeout tests
 	rejectSession bool // GET /api/session returns 401; used by login tests
 	cancelled     bool
+	submitted     bool
 }
 
 func (f *fakeServer) start(t *testing.T) *httptest.Server {
@@ -30,6 +31,7 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 	mux.HandleFunc("POST /api/query_results", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		f.submitted = true
 		job := map[string]any{"id": "job-1", "status": 3, "query_result_id": 42}
 		if f.neverDone {
 			job = map[string]any{"id": "job-1", "status": 1}
@@ -202,6 +204,40 @@ func TestQueryTimeoutCancelsJob(t *testing.T) {
 	defer f.mu.Unlock()
 	if !f.cancelled {
 		t.Error("job was not cancelled on the server")
+	}
+}
+
+func TestQueryInvalidFormatFailsBeforeSubmit(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+	_, err := runRdsh(t, srv, "", "query", "SELECT 1", "--data-source", "5", "--format", "jso")
+	if err == nil || !strings.Contains(err.Error(), "jso") {
+		t.Fatalf("error = %v, want unsupported-format error", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.submitted {
+		t.Error("query was submitted to the server despite the invalid --format")
+	}
+}
+
+func TestQueryNegativeTimeout(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+	_, err := runRdsh(t, srv, "", "query", "SELECT 1", "--data-source", "5", "--timeout", "-5s")
+	if err == nil || !strings.Contains(err.Error(), "negative") {
+		t.Errorf("error = %v, want negative-timeout error", err)
+	}
+}
+
+// TestQueryProfileFlagWiring exercises the root persistent flag through a
+// subcommand: --profile must win over the env pair and fail on unknown names.
+func TestQueryProfileFlagWiring(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+	_, err := runRdsh(t, srv, "", "query", "SELECT 1", "--profile", "nope", "--data-source", "5")
+	if err == nil || !strings.Contains(err.Error(), "nope") {
+		t.Errorf("error = %v, want unknown-profile error even though the env pair is set", err)
 	}
 }
 

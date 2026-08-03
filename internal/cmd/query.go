@@ -50,6 +50,15 @@ given. The result cache is always bypassed.`,
 }
 
 func runQuery(cmd *cobra.Command, args []string, file, dataSource, format string, timeout time.Duration) error {
+	// Fail on bad flags before anything expensive: a --format typo must not
+	// let the query run to completion on the server first.
+	if err := output.ValidateFormat(format); err != nil {
+		return err
+	}
+	if timeout < 0 {
+		return fmt.Errorf("--timeout must not be negative (got %s)", timeout)
+	}
+
 	sql, err := readSQL(cmd, args, file)
 	if err != nil {
 		return err

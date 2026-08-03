@@ -221,6 +221,17 @@ func TestListDataSources(t *testing.T) {
 	}
 }
 
+func TestNewClientTrimsTrailingSlash(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	c := redash.NewClient(srv.URL+"/", "good-key")
+	if err := c.GetSession(context.Background()); err != nil {
+		t.Errorf("GetSession() with trailing-slash base URL error = %v", err)
+	}
+}
+
 func TestGetSession(t *testing.T) {
 	f := &fakeRedash{t: t}
 	srv := f.server()
