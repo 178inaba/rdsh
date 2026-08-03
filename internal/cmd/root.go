@@ -26,7 +26,7 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 	cmd.PersistentFlags().String("profile", "", "profile to use for this invocation")
-	cmd.AddCommand(newQueryCmd())
+	cmd.AddCommand(newQueryCmd(), newAuthCmd(), newProfileCmd(), newDataSourceCmd())
 	return cmd
 }
 

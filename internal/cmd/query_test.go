@@ -18,9 +18,10 @@ import (
 // submit response already carries a finished (or never-finishing) job so
 // tests do not depend on the client's poll interval.
 type fakeServer struct {
-	mu        sync.Mutex
-	neverDone bool // job stays PENDING forever; used by timeout tests
-	cancelled bool
+	mu            sync.Mutex
+	neverDone     bool // job stays PENDING forever; used by timeout tests
+	rejectSession bool // GET /api/session returns 401; used by login tests
+	cancelled     bool
 }
 
 func (f *fakeServer) start(t *testing.T) *httptest.Server {
@@ -53,6 +54,17 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 	mux.HandleFunc("GET /api/data_sources", func(w http.ResponseWriter, r *http.Request) {
 		mustJSON(w, []map[string]any{{"id": 7, "name": "warehouse"}})
 	})
+	mux.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		reject := f.rejectSession
+		f.mu.Unlock()
+		if reject {
+			w.WriteHeader(http.StatusUnauthorized)
+			mustJSON(w, map[string]any{"message": "Couldn't find resource. Please login and try again."})
+			return
+		}
+		mustJSON(w, map[string]any{"id": 1})
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
@@ -72,7 +84,13 @@ func runRdsh(t *testing.T, srv *httptest.Server, stdin string, args ...string) (
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("RDSH_URL", srv.URL)
 	t.Setenv("RDSH_API_KEY", "test-key")
+	return runRdshWithEnvSet(t, stdin, args...)
+}
 
+// runRdshWithEnvSet executes the root command assuming the caller already
+// arranged XDG_CONFIG_HOME and the env pair.
+func runRdshWithEnvSet(t *testing.T, stdin string, args ...string) (string, error) {
+	t.Helper()
 	root := newRootCmd()
 	var out bytes.Buffer
 	root.SetOut(&out)
