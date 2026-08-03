@@ -162,5 +162,5 @@ func fromProfile(cfg *Config, name string) (Connection, error) {
 	if !ok {
 		return Connection{}, fmt.Errorf("profile %q not found; run `rdsh profile list` to see available profiles", name)
 	}
-	return Connection{URL: p.URL, APIKey: p.APIKey, DataSource: p.DataSource}, nil
+	return Connection(p), nil
 }
