@@ -56,10 +56,9 @@ func newProfileUseCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, ok := cfg.Profiles[name]; !ok {
-				return fmt.Errorf("profile %q not found; run `rdsh profile list` to see available profiles", name)
+			if err := cfg.SetActive(name); err != nil {
+				return err
 			}
-			cfg.ActiveProfile = name
 			if err := cfg.Save(); err != nil {
 				return err
 			}

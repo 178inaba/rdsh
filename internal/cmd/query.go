@@ -11,9 +11,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
-	"github.com/178inaba/rdsh/internal/config"
 	"github.com/178inaba/rdsh/internal/output"
 	"github.com/178inaba/rdsh/internal/redash"
 )
@@ -111,7 +109,7 @@ func readSQL(cmd *cobra.Command, args []string, file string) (string, error) {
 	}
 
 	in := cmd.InOrStdin()
-	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+	if _, isTTY := terminalFile(in); isTTY {
 		return "", errors.New("no SQL provided; pass it as an argument, via -f, or on stdin")
 	}
 	data, err := io.ReadAll(in)
@@ -123,20 +121,6 @@ func readSQL(cmd *cobra.Command, args []string, file string) (string, error) {
 		return "", errors.New("no SQL provided on stdin; pass it as an argument, via -f, or on stdin")
 	}
 	return sql, nil
-}
-
-// resolveConnection loads the config and applies the profile/env
-// precedence. The --profile persistent flag is defined on the root command.
-func resolveConnection(cmd *cobra.Command) (config.Connection, error) {
-	profile, err := cmd.Flags().GetString("profile")
-	if err != nil {
-		return config.Connection{}, err
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		return config.Connection{}, err
-	}
-	return config.Resolve(cfg, profile)
 }
 
 // resolveDataSource returns the data source ID to query. The flag overrides
@@ -165,6 +149,9 @@ func resolveDataSource(ctx context.Context, client *redash.Client, flag, profile
 	return 0, fmt.Errorf("data source %q not found; run `rdsh data-source list` to see available data sources", value)
 }
 
+// isDigits deliberately rejects sign prefixes: only an all-digit value is
+// treated as an ID, so a data source named e.g. "-3" still goes through
+// name lookup (strconv.Atoi alone would accept it as an ID).
 func isDigits(s string) bool {
 	if s == "" {
 		return false

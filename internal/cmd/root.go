@@ -5,11 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
+
+	"github.com/178inaba/rdsh/internal/config"
 )
 
 // timeoutExitCode follows the GNU timeout convention.
@@ -53,4 +57,29 @@ func exitCode(err error) int {
 	default:
 		return 1
 	}
+}
+
+// resolveConnection loads the config and applies the profile/env
+// precedence. The --profile persistent flag is defined on the root command.
+func resolveConnection(cmd *cobra.Command) (config.Connection, error) {
+	profile, err := cmd.Flags().GetString("profile")
+	if err != nil {
+		return config.Connection{}, err
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return config.Connection{}, err
+	}
+	return config.Resolve(cfg, profile)
+}
+
+// terminalFile reports the underlying *os.File of a command input stream
+// and whether it is a real terminal. Non-*os.File readers report
+// (nil, false); tests use them as scriptable stdin.
+func terminalFile(in io.Reader) (*os.File, bool) {
+	f, ok := in.(*os.File)
+	if !ok {
+		return nil, false
+	}
+	return f, term.IsTerminal(int(f.Fd()))
 }

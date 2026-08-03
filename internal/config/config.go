@@ -160,7 +160,32 @@ func Resolve(cfg *Config, profileFlag string) (Connection, error) {
 func fromProfile(cfg *Config, name string) (Connection, error) {
 	p, ok := cfg.Profiles[name]
 	if !ok {
-		return Connection{}, fmt.Errorf("profile %q not found; run `rdsh profile list` to see available profiles", name)
+		return Connection{}, profileNotFound(name)
 	}
 	return Connection(p), nil
+}
+
+// SetProfile adds or replaces a profile. The first profile ever saved
+// becomes the active one.
+func (c *Config) SetProfile(name string, p Profile) {
+	if c.Profiles == nil {
+		c.Profiles = map[string]Profile{}
+	}
+	c.Profiles[name] = p
+	if c.ActiveProfile == "" {
+		c.ActiveProfile = name
+	}
+}
+
+// SetActive switches the active profile; the name must exist.
+func (c *Config) SetActive(name string) error {
+	if _, ok := c.Profiles[name]; !ok {
+		return profileNotFound(name)
+	}
+	c.ActiveProfile = name
+	return nil
+}
+
+func profileNotFound(name string) error {
+	return fmt.Errorf("profile %q not found; run `rdsh profile list` to see available profiles", name)
 }

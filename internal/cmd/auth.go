@@ -44,8 +44,8 @@ func runAuthLogin(cmd *cobra.Command, _ []string) error {
 	// The masked key prompt needs a real terminal. Non-TTY callers (agents,
 	// CI) are pointed at the env pair instead; a non-*os.File reader is the
 	// test seam and reads answers line by line.
-	stdinFile, isFile := in.(*os.File)
-	if isFile && !term.IsTerminal(int(stdinFile.Fd())) {
+	stdinFile, isTTY := terminalFile(in)
+	if stdinFile != nil && !isTTY {
 		return errors.New("auth login is interactive and needs a terminal; set RDSH_URL and RDSH_API_KEY instead")
 	}
 
@@ -60,7 +60,7 @@ func runAuthLogin(cmd *cobra.Command, _ []string) error {
 		return errors.New("URL must not be empty")
 	}
 
-	key, err := promptAPIKey(reader, errOut, stdinFile, isFile)
+	key, err := promptAPIKey(reader, errOut, stdinFile)
 	if err != nil {
 		return err
 	}
@@ -90,13 +90,7 @@ func runAuthLogin(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if cfg.Profiles == nil {
-		cfg.Profiles = map[string]config.Profile{}
-	}
-	cfg.Profiles[name] = config.Profile{URL: url, APIKey: key, DataSource: dataSource}
-	if cfg.ActiveProfile == "" {
-		cfg.ActiveProfile = name
-	}
+	cfg.SetProfile(name, config.Profile{URL: url, APIKey: key, DataSource: dataSource})
 	if err := cfg.Save(); err != nil {
 		return err
 	}
@@ -116,10 +110,11 @@ func promptLine(reader *bufio.Reader, errOut io.Writer, prompt string) (string, 
 	return strings.TrimSpace(line), nil
 }
 
-// promptAPIKey masks the key on a real terminal; the test seam falls back
-// to a plain line read.
-func promptAPIKey(reader *bufio.Reader, errOut io.Writer, stdinFile *os.File, isFile bool) (string, error) {
-	if !isFile {
+// promptAPIKey masks the key on a real terminal (a non-nil stdinFile is
+// guaranteed to be a TTY by the guard in runAuthLogin); the test seam falls
+// back to a plain line read.
+func promptAPIKey(reader *bufio.Reader, errOut io.Writer, stdinFile *os.File) (string, error) {
+	if stdinFile == nil {
 		return promptLine(reader, errOut, "API key: ")
 	}
 	fmt.Fprint(errOut, "API key: ")

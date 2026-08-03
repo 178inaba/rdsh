@@ -17,6 +17,9 @@ func setConfigDir(t *testing.T) string {
 	return dir
 }
 
+// clearEnvPair removes the env pair: t.Setenv first so the original value
+// is restored on cleanup, then Unsetenv because empty and unset are
+// different for the atomic-pair validation.
 func clearEnvPair(t *testing.T) {
 	t.Helper()
 	t.Setenv("RDSH_URL", "")

@@ -81,10 +81,7 @@ func mustJSON(w http.ResponseWriter, v any) {
 // the fake server and returns stdout and the error.
 func runRdsh(t *testing.T, srv *httptest.Server, stdin string, args ...string) (string, error) {
 	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("RDSH_URL", srv.URL)
-	t.Setenv("RDSH_API_KEY", "test-key")
-	return runRdshWithEnvSet(t, stdin, args...)
+	return runRdshIn(t, t.TempDir(), srv, stdin, args...)
 }
 
 // runRdshWithEnvSet executes the root command assuming the caller already
