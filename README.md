@@ -16,7 +16,7 @@ go install github.com/178inaba/rdsh@latest
 # One-time interactive setup (the key is verified before saving)
 rdsh auth login
 
-# Run a query (CSV by default)
+# Run a query (CSV by default; also --format tsv or json)
 rdsh query "SELECT 1"
 
 # From stdin or a file, JSON output, explicit data source
