@@ -40,4 +40,4 @@ SQL
 
 ## Output
 
-`--format json` (an array of row objects) for machine processing; CSV when column order matters (JSON rows carry no column order).
+`--format json` (an array of row objects) for machine processing; `csv` or `tsv` when column order matters (JSON rows carry no column order) — prefer `tsv` when cell values may contain commas.

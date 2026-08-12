@@ -1,5 +1,7 @@
 # rdsh
 
+[![CI](https://github.com/178inaba/rdsh/actions/workflows/ci.yml/badge.svg)](https://github.com/178inaba/rdsh/actions/workflows/ci.yml)
+
 A CLI that runs ad-hoc SQL on [Redash](https://redash.io/) and prints the result — one command per round trip, designed so AI coding agents can call it from a shell.
 
 ## Install
@@ -14,7 +16,7 @@ go install github.com/178inaba/rdsh@latest
 # One-time interactive setup (the key is verified before saving)
 rdsh auth login
 
-# Run a query (CSV by default)
+# Run a query (CSV by default; also --format tsv or json)
 rdsh query "SELECT 1"
 
 # From stdin or a file, JSON output, explicit data source
