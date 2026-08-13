@@ -11,35 +11,53 @@ import (
 	"github.com/178inaba/rdsh/internal/redash"
 )
 
+// Format is an output format accepted by Write. It implements pflag.Value,
+// so a --format typo is rejected while cobra parses the flags — before the
+// command runs and submits the query to the server.
+type Format string
+
 // Formats accepted by Write.
 const (
-	FormatCSV  = "csv"
-	FormatTSV  = "tsv"
-	FormatJSON = "json"
+	CSV  Format = "csv"
+	TSV  Format = "tsv"
+	JSON Format = "json"
 )
 
-// ValidateFormat rejects unsupported format names. Commands call it before
-// doing expensive work so a typo fails before the query is submitted.
-func ValidateFormat(format string) error {
-	switch format {
-	case FormatCSV, FormatTSV, FormatJSON:
+func (f Format) String() string { return string(f) }
+
+func (f *Format) Set(s string) error {
+	switch v := Format(s); v {
+	case CSV, TSV, JSON:
+		*f = v
 		return nil
 	}
-	return fmt.Errorf("unsupported format %q (supported: csv, tsv, json)", format)
+	return unsupportedError(Format(s))
+}
+
+// Type names the value shown in the --format help line. It reports "string"
+// rather than "format" because that help text is part of the agent-facing
+// contract; see the documentation sync rule in CLAUDE.md.
+func (Format) Type() string { return "string" }
+
+// unsupportedError is shared by Set and Write: a Format converted from an
+// arbitrary string still type-checks, so Write cannot assume its argument
+// went through Set.
+func unsupportedError(f Format) error {
+	return fmt.Errorf("unsupported format %q (supported: %s, %s, %s)", string(f), CSV, TSV, JSON)
 }
 
 // Write renders the result in the given format. Rows arrive as maps keyed
 // by column name, so CSV/TSV column order is taken from result.Columns.
-func Write(w io.Writer, format string, result *redash.QueryResult) error {
-	switch format {
-	case FormatCSV:
+func Write(w io.Writer, f Format, result *redash.QueryResult) error {
+	switch f {
+	case CSV:
 		return writeSeparated(w, ',', result)
-	case FormatTSV:
+	case TSV:
 		return writeSeparated(w, '\t', result)
-	case FormatJSON:
+	case JSON:
 		return writeJSON(w, result)
 	default:
-		return ValidateFormat(format)
+		return unsupportedError(f)
 	}
 }
 

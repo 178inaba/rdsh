@@ -27,7 +27,7 @@ func newQueryCmd(g *globalFlags) *cobra.Command {
 	var (
 		file         string
 		dataSource   string
-		outputFormat string
+		outputFormat = format.CSV
 		timeout      time.Duration
 	)
 	cmd := &cobra.Command{
@@ -44,17 +44,15 @@ given. The result cache is always bypassed.`,
 	}
 	cmd.Flags().StringVarP(&file, "file", "f", "", "read SQL from a file")
 	cmd.Flags().StringVar(&dataSource, "data-source", "", "data source ID or name (default: the profile's data source)")
-	cmd.Flags().StringVar(&outputFormat, "format", format.FormatCSV, "output format: csv, tsv, or json")
+	cmd.Flags().Var(&outputFormat, "format", "output format: csv, tsv, or json")
 	cmd.Flags().DurationVar(&timeout, "timeout", defaultTimeout, "cancel the query after this duration (0 = no limit)")
 	return cmd
 }
 
-func runQuery(cmd *cobra.Command, args []string, g *globalFlags, file, dataSource, outputFormat string, timeout time.Duration) error {
-	// Fail on bad flags before anything expensive: a --format typo must not
-	// let the query run to completion on the server first.
-	if err := format.ValidateFormat(outputFormat); err != nil {
-		return err
-	}
+func runQuery(cmd *cobra.Command, args []string, g *globalFlags, file, dataSource string, outputFormat format.Format, timeout time.Duration) error {
+	// Fail on a bad --timeout before anything expensive, so it does not let
+	// the query run to completion on the server first. --format needs no
+	// check here: format.Format rejects a typo during flag parsing.
 	if timeout < 0 {
 		return fmt.Errorf("--timeout must not be negative (got %s)", timeout)
 	}
