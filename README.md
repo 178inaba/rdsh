@@ -47,7 +47,7 @@ RDSH_URL=https://redash.example.com RDSH_API_KEY=... rdsh query "SELECT 1" --dat
 
 ### Timeouts
 
-Long-running queries: the default timeout is 90s and exits with code 124, cancelling the server-side job.
+The default timeout is 90s; exceeding it exits with code 124, cancelling the server-side job.
 
 ```sh
 rdsh query -f heavy.sql --timeout 30m
