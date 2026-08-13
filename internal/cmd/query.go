@@ -23,7 +23,7 @@ var errTimeout = errors.New("query timed out")
 
 const defaultTimeout = 90 * time.Second
 
-func newQueryCmd() *cobra.Command {
+func newQueryCmd(g *globalFlags) *cobra.Command {
 	var (
 		file       string
 		dataSource string
@@ -39,7 +39,7 @@ SQL is taken from the argument, from --file, or from stdin when neither is
 given. The result cache is always bypassed.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQuery(cmd, args, file, dataSource, format, timeout)
+			return runQuery(cmd, args, g, file, dataSource, format, timeout)
 		},
 	}
 	cmd.Flags().StringVarP(&file, "file", "f", "", "read SQL from a file")
@@ -49,7 +49,7 @@ given. The result cache is always bypassed.`,
 	return cmd
 }
 
-func runQuery(cmd *cobra.Command, args []string, file, dataSource, format string, timeout time.Duration) error {
+func runQuery(cmd *cobra.Command, args []string, g *globalFlags, file, dataSource, format string, timeout time.Duration) error {
 	// Fail on bad flags before anything expensive: a --format typo must not
 	// let the query run to completion on the server first.
 	if err := output.ValidateFormat(format); err != nil {
@@ -64,7 +64,7 @@ func runQuery(cmd *cobra.Command, args []string, file, dataSource, format string
 		return err
 	}
 
-	conn, err := resolveConnection(cmd)
+	conn, err := resolveConnection(g.profile)
 	if err != nil {
 		return err
 	}

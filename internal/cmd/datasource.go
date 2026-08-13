@@ -8,22 +8,22 @@ import (
 	"github.com/178inaba/rdsh/internal/redash"
 )
 
-func newDataSourceCmd() *cobra.Command {
+func newDataSourceCmd(g *globalFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "data-source",
 		Short: "Manage data sources",
 	}
-	cmd.AddCommand(newDataSourceListCmd())
+	cmd.AddCommand(newDataSourceListCmd(g))
 	return cmd
 }
 
-func newDataSourceListCmd() *cobra.Command {
+func newDataSourceListCmd(g *globalFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List data sources as ID<TAB>name",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			conn, err := resolveConnection(cmd)
+			conn, err := resolveConnection(g.profile)
 			if err != nil {
 				return err
 			}
