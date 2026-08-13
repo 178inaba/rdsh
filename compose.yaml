@@ -1,0 +1,17 @@
+# The image tag below is the single source of truth for the golangci-lint
+# version: CI reads it out of this file, and Dependabot bumps it here. Only
+# the version crosses over — CI installs golangci-lint directly, so flags
+# added to the entrypoint below take effect locally and not in CI.
+services:
+  lint:
+    image: golangci/golangci-lint:v2.12.2
+    entrypoint: ['golangci-lint', 'run']
+    volumes:
+      - .:/app
+      - gomod-cache:/go/pkg/mod
+      - lint-cache:/root/.cache
+    working_dir: /app
+
+volumes:
+  gomod-cache:
+  lint-cache:

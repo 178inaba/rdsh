@@ -52,3 +52,15 @@ Copying works even if you delete the clone afterwards. If you keep a clone and w
 mkdir -p ~/.claude/skills
 ln -s "$(pwd)/rdsh/skills/rdsh" ~/.claude/skills/rdsh
 ```
+
+## Development
+
+```sh
+go test -race ./...
+
+# Lint runs in Docker so the version matches CI — see compose.yaml
+docker compose run --rm lint
+
+# Let golangci-lint apply the fixes it can make itself
+docker compose run --rm lint --fix
+```
