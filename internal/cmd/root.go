@@ -19,7 +19,18 @@ import (
 // timeoutExitCode follows the GNU timeout convention.
 const timeoutExitCode = 124
 
+// globalFlags carries the root persistent flag values into each command's
+// RunE. newRootCmd binds them and hands the same pointer to every
+// constructor that needs them, so no command or flag state lives at package
+// level. The values are only final after flag parsing, so a RunE closure
+// must read the fields when it runs rather than copy them at construction.
+type globalFlags struct {
+	profile string
+}
+
 func newRootCmd() *cobra.Command {
+	var g globalFlags
+
 	cmd := &cobra.Command{
 		Use:   "rdsh",
 		Short: "Run ad-hoc SQL on Redash from the command line",
@@ -29,8 +40,16 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	cmd.PersistentFlags().String("profile", "", "profile to use for this invocation")
-	cmd.AddCommand(newQueryCmd(), newAuthCmd(), newProfileCmd(), newDataSourceCmd())
+	cmd.PersistentFlags().StringVar(&g.profile, "profile", "", "profile to use for this invocation")
+	cmd.AddCommand(
+		newQueryCmd(&g),
+		newDataSourceCmd(&g),
+		// auth and profile take no globalFlags: auth login builds its client
+		// from the URL and key it just prompted for, and profile only reads
+		// and writes the config file, so neither resolves a connection.
+		newAuthCmd(),
+		newProfileCmd(),
+	)
 	return cmd
 }
 
@@ -60,12 +79,8 @@ func exitCode(err error) int {
 }
 
 // resolveConnection loads the config and applies the profile/env
-// precedence. The --profile persistent flag is defined on the root command.
-func resolveConnection(cmd *cobra.Command) (config.Connection, error) {
-	profile, err := cmd.Flags().GetString("profile")
-	if err != nil {
-		return config.Connection{}, err
-	}
+// precedence. profile is the root --profile persistent flag value.
+func resolveConnection(profile string) (config.Connection, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return config.Connection{}, err
