@@ -87,7 +87,9 @@ func TestWriteUnknownFormat(t *testing.T) {
 
 func TestFormatSet(t *testing.T) {
 	for _, name := range []string{"csv", "tsv", "json"} {
-		f := format.CSV
+		// Start from a value no case sets, so a Set that assigns nothing
+		// cannot pass by matching the value it started with.
+		f := format.Format("")
 		if err := f.Set(name); err != nil {
 			t.Errorf("Set(%q) error = %v", name, err)
 		}
