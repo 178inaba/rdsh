@@ -1,4 +1,4 @@
-package output_test
+package format_test
 
 import (
 	"bytes"
@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/178inaba/rdsh/internal/output"
+	"github.com/178inaba/rdsh/internal/format"
 	"github.com/178inaba/rdsh/internal/redash"
 )
 
@@ -25,7 +25,7 @@ func result() *redash.QueryResult {
 
 func TestWriteCSV(t *testing.T) {
 	var buf bytes.Buffer
-	if err := output.Write(&buf, "csv", result()); err != nil {
+	if err := format.Write(&buf, "csv", result()); err != nil {
 		t.Fatalf("Write(csv) error = %v", err)
 	}
 	want := "id,note,amount\n" +
@@ -38,7 +38,7 @@ func TestWriteCSV(t *testing.T) {
 
 func TestWriteTSV(t *testing.T) {
 	var buf bytes.Buffer
-	if err := output.Write(&buf, "tsv", result()); err != nil {
+	if err := format.Write(&buf, "tsv", result()); err != nil {
 		t.Fatalf("Write(tsv) error = %v", err)
 	}
 	want := "id\tnote\tamount\n" +
@@ -51,7 +51,7 @@ func TestWriteTSV(t *testing.T) {
 
 func TestWriteJSON(t *testing.T) {
 	var buf bytes.Buffer
-	if err := output.Write(&buf, "json", result()); err != nil {
+	if err := format.Write(&buf, "json", result()); err != nil {
 		t.Fatalf("Write(json) error = %v", err)
 	}
 
@@ -77,7 +77,7 @@ func TestWriteJSON(t *testing.T) {
 
 func TestWriteUnknownFormat(t *testing.T) {
 	var buf bytes.Buffer
-	err := output.Write(&buf, "xml", result())
+	err := format.Write(&buf, "xml", result())
 	if err == nil || !strings.Contains(err.Error(), "xml") {
 		t.Errorf("Write(xml) error = %v, want unsupported-format error naming it", err)
 	}
@@ -87,7 +87,7 @@ func TestWriteEmptyResult(t *testing.T) {
 	var buf bytes.Buffer
 	res := &redash.QueryResult{Columns: []redash.Column{{Name: "a"}}, Rows: nil}
 
-	if err := output.Write(&buf, "csv", res); err != nil {
+	if err := format.Write(&buf, "csv", res); err != nil {
 		t.Fatalf("Write(csv, empty) error = %v", err)
 	}
 	if got := buf.String(); got != "a\n" {
@@ -95,7 +95,7 @@ func TestWriteEmptyResult(t *testing.T) {
 	}
 
 	buf.Reset()
-	if err := output.Write(&buf, "json", res); err != nil {
+	if err := format.Write(&buf, "json", res); err != nil {
 		t.Fatalf("Write(json, empty) error = %v", err)
 	}
 	if got := strings.TrimSpace(buf.String()); got != "[]" {

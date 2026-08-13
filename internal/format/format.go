@@ -1,5 +1,5 @@
-// Package output renders query results as CSV, TSV, or JSON.
-package output
+// Package format renders query results as CSV, TSV, or JSON.
+package format
 
 import (
 	"encoding/csv"
