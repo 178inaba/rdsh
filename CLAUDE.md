@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+## Agent contract
+
 rdsh's primary consumer is an AI coding agent calling it from a shell; the conventions below exist to keep that contract stable.
 
 - **Three-way documentation sync** — user-facing CLI behaviour is stated in `README.md`, `skills/rdsh/SKILL.md`, and the cobra help strings under `internal/cmd/`. Changing the CLI means updating all three in the same PR. Overlaps today: the 90 s default `--timeout`, the exit codes, and the default output format.
