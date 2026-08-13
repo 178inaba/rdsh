@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/178inaba/rdsh/internal/output"
+	"github.com/178inaba/rdsh/internal/format"
 	"github.com/178inaba/rdsh/internal/redash"
 )
 
@@ -25,10 +25,10 @@ const defaultTimeout = 90 * time.Second
 
 func newQueryCmd(g *globalFlags) *cobra.Command {
 	var (
-		file       string
-		dataSource string
-		format     string
-		timeout    time.Duration
+		file         string
+		dataSource   string
+		outputFormat = format.CSV
+		timeout      time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "query [sql]",
@@ -39,22 +39,20 @@ SQL is taken from the argument, from --file, or from stdin when neither is
 given. The result cache is always bypassed.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQuery(cmd, args, g, file, dataSource, format, timeout)
+			return runQuery(cmd, args, g, file, dataSource, outputFormat, timeout)
 		},
 	}
 	cmd.Flags().StringVarP(&file, "file", "f", "", "read SQL from a file")
 	cmd.Flags().StringVar(&dataSource, "data-source", "", "data source ID or name (default: the profile's data source)")
-	cmd.Flags().StringVar(&format, "format", output.FormatCSV, "output format: csv, tsv, or json")
+	cmd.Flags().Var(&outputFormat, "format", "output format: csv, tsv, or json")
 	cmd.Flags().DurationVar(&timeout, "timeout", defaultTimeout, "cancel the query after this duration (0 = no limit)")
 	return cmd
 }
 
-func runQuery(cmd *cobra.Command, args []string, g *globalFlags, file, dataSource, format string, timeout time.Duration) error {
-	// Fail on bad flags before anything expensive: a --format typo must not
-	// let the query run to completion on the server first.
-	if err := output.ValidateFormat(format); err != nil {
-		return err
-	}
+func runQuery(cmd *cobra.Command, args []string, g *globalFlags, file, dataSource string, outputFormat format.Format, timeout time.Duration) error {
+	// Fail on a bad --timeout before anything expensive, so it does not let
+	// the query run to completion on the server first. --format needs no
+	// check here: format.Format rejects a typo during flag parsing.
 	if timeout < 0 {
 		return fmt.Errorf("--timeout must not be negative (got %s)", timeout)
 	}
@@ -90,7 +88,7 @@ func runQuery(cmd *cobra.Command, args []string, g *globalFlags, file, dataSourc
 		return err
 	}
 
-	return output.Write(cmd.OutOrStdout(), format, result)
+	return format.Write(cmd.OutOrStdout(), outputFormat, result)
 }
 
 // readSQL picks the SQL source by priority: the argument and --file
