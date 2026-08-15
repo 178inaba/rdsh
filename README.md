@@ -49,11 +49,11 @@ RDSH_URL=https://redash.example.com RDSH_API_KEY=... rdsh query "SELECT 1" --dat
 
 The default timeout is 90s; exceeding it exits with code 124, cancelling the server-side job.
 
-Ctrl-C and `SIGTERM` cancel the in-flight query rather than leaving it to run to completion. At an `rdsh auth login` prompt they end the command straight away, without writing or changing a profile.
-
 ```sh
 rdsh query -f heavy.sql --timeout 30m
 ```
+
+Ctrl-C and `SIGTERM` cancel the in-flight query rather than leaving it to run to completion. At an `rdsh auth login` prompt they end the command straight away, without writing or changing a profile.
 
 ## Agent Skill
 
