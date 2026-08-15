@@ -53,11 +53,19 @@ func newRootCmd() *cobra.Command {
 	return cmd
 }
 
+// interruptSignals lists the signals Execute cancels the command context
+// on. It is a function so tests can assert the registered set without a
+// second copy of the list to keep in step.
+func interruptSignals() []os.Signal {
+	return []os.Signal{os.Interrupt, syscall.SIGTERM}
+}
+
 // Execute runs the root command and returns the process exit code. SIGINT
 // and SIGTERM cancel the command context so a running query can cancel its
-// server-side job before the process exits.
+// server-side job before the process exits, and so `auth login` abandons a
+// prompt it is waiting on.
 func Execute() int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), interruptSignals()...)
 	defer stop()
 
 	err := newRootCmd().ExecuteContext(ctx)
