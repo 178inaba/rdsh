@@ -9,5 +9,5 @@
   "homepage": "https://github.com/178inaba/rdsh",
   "repository": "https://github.com/178inaba/rdsh",
   "license": "MIT",
-  "keywords": ["redash", "sql", "cli", "agent-skill"]
+  "keywords": ["redash", "sql", "cli", "agent-skills"]
 }
