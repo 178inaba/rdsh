@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "rdsh",
+  "description": "Run ad-hoc SQL on Redash from the command line: one command per round trip, built for AI coding agents.",
+  "owner": {
+    "name": "Masahiro Furudate",
+    "url": "https://github.com/178inaba"
+  },
+  "plugins": [
+    {
+      "name": "rdsh",
+      "source": "./",
+      "description": "Run ad-hoc SQL on Redash from the command line: one command per round trip, built for AI coding agents."
+    }
+  ]
+}

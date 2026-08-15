@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "rdsh",
+  "description": "Run ad-hoc SQL on Redash from the command line: one command per round trip, built for AI coding agents.",
+  "author": {
+    "name": "Masahiro Furudate",
+    "url": "https://github.com/178inaba"
+  },
+  "homepage": "https://github.com/178inaba/rdsh",
+  "repository": "https://github.com/178inaba/rdsh",
+  "license": "MIT",
+  "keywords": ["redash", "sql", "cli", "agent-skill"]
+}
