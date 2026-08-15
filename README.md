@@ -55,19 +55,17 @@ rdsh query -f heavy.sql --timeout 30m
 
 ## Agent Skill
 
-The repository ships an [Agent Skill](skills/rdsh/SKILL.md) that teaches AI coding agents how to use rdsh. Install it by copying the directory into your skills directory:
+The repository ships an [Agent Skill](skills/rdsh/SKILL.md) that teaches AI coding agents how to use rdsh. In Claude Code, install it as a plugin:
 
 ```sh
-git clone https://github.com/178inaba/rdsh.git
-mkdir -p ~/.claude/skills
-cp -R rdsh/skills/rdsh ~/.claude/skills/
+claude plugin marketplace add 178inaba/rdsh
+claude plugin install rdsh@rdsh
 ```
 
-Copying works even if you delete the clone afterwards. If you keep a clone and want the skill to track updates, symlink it instead:
+For other agents, use a skill installer that consumes GitHub repos directly, e.g. [`npx skills`](https://www.npmjs.com/package/skills):
 
 ```sh
-mkdir -p ~/.claude/skills
-ln -s "$(pwd)/rdsh/skills/rdsh" ~/.claude/skills/rdsh
+npx skills add 178inaba/rdsh
 ```
 
 ## Development
