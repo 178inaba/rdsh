@@ -209,13 +209,10 @@ func promptAPIKey(ctx context.Context, reader *bufio.Reader, errOut io.Writer, s
 		if restoreErr := term.Restore(fd, state); restoreErr != nil {
 			return "", restoreErr
 		}
-		// With ECHO cleared not even "^C" appears, so end the prompt line
-		// here as readLine does on the same path.
-		fmt.Fprintln(errOut)
-		return "", err
 	}
-	// ReadPassword leaves the newline the user typed unechoed, so emit one
-	// to keep whatever comes next off the prompt line.
+	// Nothing has ended the prompt line at this point either way:
+	// ReadPassword leaves the newline the user typed unechoed, and on the
+	// cancelled path ECHO is still cleared, so not even "^C" appeared.
 	fmt.Fprintln(errOut)
 	if err != nil {
 		return "", err

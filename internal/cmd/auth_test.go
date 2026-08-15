@@ -161,14 +161,6 @@ func newInterruptedStdin(t *testing.T, interrupt func(), answers ...string) *scr
 	return newScriptedStdin(t, interrupt, len(answers), answers)
 }
 
-// newStdinInterruptedWithLastAnswer interrupts as the final answer is
-// served, standing in for a signal that lands in the window between the
-// last prompt and the write.
-func newStdinInterruptedWithLastAnswer(t *testing.T, interrupt func(), answers ...string) *scriptedStdin {
-	t.Helper()
-	return newScriptedStdin(t, interrupt, len(answers)-1, answers)
-}
-
 // assertInterrupted checks the outcome every interrupted run shares: the
 // command fails, exits 1, and says it was interrupted without dragging in
 // the empty-answer complaint that an unwatched prompt used to produce.
@@ -297,7 +289,9 @@ func TestAuthLoginInterruptedWithFinalAnswerSavesNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	stdin := newStdinInterruptedWithLastAnswer(t, cancel, authLoginAnswers(srv.URL)...)
+	// Interrupt as the final answer is served, rather than in place of it.
+	answers := authLoginAnswers(srv.URL)
+	stdin := newScriptedStdin(t, cancel, len(answers)-1, answers)
 	out, err := runRdshWithStdin(t, ctx, stdin, "auth", "login")
 	assertInterrupted(t, out, err)
 	assertConfigUnchanged(t, nil)

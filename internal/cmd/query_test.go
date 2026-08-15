@@ -122,10 +122,16 @@ func runRdshWithStdin(t *testing.T, ctx context.Context, stdin io.Reader, args .
 	done := make(chan error, 1)
 	go func() { done <- root.ExecuteContext(ctx) }()
 
+	// A timer rather than time.After: nearly every test in the package runs
+	// through here, and time.After would leave each one's timer parked in
+	// the runtime for the full ten seconds after the command had returned.
+	timer := time.NewTimer(commandReturnTimeout)
+	defer timer.Stop()
+
 	select {
 	case err := <-done:
 		return out.String(), err
-	case <-time.After(commandReturnTimeout):
+	case <-timer.C:
 		t.Fatal("the command did not return")
 		return "", nil // unreachable: t.Fatal ends this goroutine
 	}
