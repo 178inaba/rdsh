@@ -53,6 +53,8 @@ The default timeout is 90s; exceeding it exits with code 124, cancelling the ser
 rdsh query -f heavy.sql --timeout 30m
 ```
 
+Ctrl-C and `SIGTERM` cancel the in-flight query rather than leaving it to run to completion. At an `rdsh auth login` prompt they end the command straight away, without writing or changing a profile.
+
 ## Agent Skill
 
 The repository ships an [Agent Skill](skills/rdsh/SKILL.md) that teaches AI coding agents how to use rdsh. In Claude Code, install it as a plugin:

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeServer emulates just enough of Redash for the command layer: the
@@ -90,14 +92,49 @@ func runRdsh(t *testing.T, srv *httptest.Server, stdin string, args ...string) (
 // arranged XDG_CONFIG_HOME and the env pair.
 func runRdshWithEnvSet(t *testing.T, stdin string, args ...string) (string, error) {
 	t.Helper()
+	return runRdshWithStdin(t, context.Background(), strings.NewReader(stdin), args...)
+}
+
+// commandReturnTimeout bounds how long a test waits for a command to
+// return. Nothing here is supposed to block indefinitely, so this only ever
+// fires on a regression; it is generous so a loaded CI machine does not
+// trip it.
+const commandReturnTimeout = 10 * time.Second
+
+// runRdshWithStdin is runRdshWithEnvSet with an explicit context and an
+// io.Reader stdin, so a test can cancel a command mid-prompt or hand it a
+// real *os.File. Both streams share one buffer, so a test that cares which
+// one produced the text has to assert the whole of it.
+//
+// The command runs in a goroutine because an interrupted prompt is supposed
+// to return on its own; called directly, a run that did not would hang the
+// package until the test binary panics. Nothing may call t.Fatal from that
+// goroutine — it only ends the goroutine it runs on.
+func runRdshWithStdin(t *testing.T, ctx context.Context, stdin io.Reader, args ...string) (string, error) {
+	t.Helper()
 	root := newRootCmd()
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&out)
-	root.SetIn(strings.NewReader(stdin))
+	root.SetIn(stdin)
 	root.SetArgs(args)
-	err := root.ExecuteContext(context.Background())
-	return out.String(), err
+
+	done := make(chan error, 1)
+	go func() { done <- root.ExecuteContext(ctx) }()
+
+	// A timer rather than time.After: nearly every test in the package runs
+	// through here, and time.After would leave each one's timer parked in
+	// the runtime for the full ten seconds after the command had returned.
+	timer := time.NewTimer(commandReturnTimeout)
+	defer timer.Stop()
+
+	select {
+	case err := <-done:
+		return out.String(), err
+	case <-timer.C:
+		t.Fatal("the command did not return")
+		return "", nil // unreachable: t.Fatal ends this goroutine
+	}
 }
 
 const wantCSV = "n\n1\n"

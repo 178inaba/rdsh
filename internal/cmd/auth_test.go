@@ -1,10 +1,16 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"io"
 	"net/http/httptest"
 	"os"
+	"os/signal"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/178inaba/rdsh/internal/config"
@@ -90,6 +96,276 @@ func TestAuthLoginRejectedCredentialsSaveNothing(t *testing.T) {
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Errorf("config file should not exist after failed login, stat err = %v", statErr)
 	}
+}
+
+// authLoginPrompts is what auth login writes, in order, for a run that
+// answers every prompt.
+var authLoginPrompts = []string{
+	"Redash URL: ",
+	"API key: ",
+	"Profile name [default]: ",
+	"Default data source (ID or name, optional): ",
+}
+
+// authLoginAnswers answers authLoginPrompts one for one.
+func authLoginAnswers(srvURL string) []string {
+	return []string{srvURL + "\n", "secret-key\n", "staging\n", "3\n"}
+}
+
+// scriptedStdin serves one answer per Read so a test can pick the prompt
+// the user interrupts. interrupt fires as the read at interruptAt is
+// served; when that read has no answer left — the user pressed Ctrl-C
+// instead of typing — the reader then blocks the way a real terminal read
+// does. Go registers its signal handlers with SA_RESTART, so a signal does
+// not make a pending read return; returning io.EOF here would end the
+// prompt on its own and the command would abort with or without the fix
+// under test.
+type scriptedStdin struct {
+	answers     []string // each ends with "\n"
+	interruptAt int
+	interrupt   func()
+	release     <-chan struct{} // closed by the test, releasing a parked read
+
+	reads int
+}
+
+func (s *scriptedStdin) Read(p []byte) (int, error) {
+	read := s.reads
+	s.reads++
+	if read == s.interruptAt {
+		s.interrupt()
+	}
+	if read < len(s.answers) {
+		return copy(p, s.answers[read]), nil
+	}
+	<-s.release
+	return 0, io.EOF
+}
+
+func newScriptedStdin(t *testing.T, interrupt func(), interruptAt int, answers []string) *scriptedStdin {
+	t.Helper()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	return &scriptedStdin{
+		answers:     answers,
+		interruptAt: interruptAt,
+		interrupt:   interrupt,
+		release:     release,
+	}
+}
+
+// newInterruptedStdin answers the prompts in order and then interrupts at
+// the next one, standing in for a user who presses Ctrl-C instead of typing.
+func newInterruptedStdin(t *testing.T, interrupt func(), answers ...string) *scriptedStdin {
+	t.Helper()
+	return newScriptedStdin(t, interrupt, len(answers), answers)
+}
+
+// assertInterrupted checks the outcome every interrupted run shares: the
+// command fails, exits 1, and says it was interrupted without dragging in
+// the empty-answer complaint that an unwatched prompt used to produce.
+func assertInterrupted(t *testing.T, out string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("error = nil, want an interruption; output = %q", out)
+	}
+	if got := exitCode(err); got != 1 {
+		t.Errorf("exitCode(%v) = %d, want 1", err, got)
+	}
+	if !strings.Contains(err.Error(), "interrupted") {
+		t.Errorf("error = %v, want it to read as an interruption", err)
+	}
+	if strings.Contains(err.Error(), "must not be empty") {
+		t.Errorf("error = %v, want no empty-answer complaint", err)
+	}
+}
+
+// readConfigFile returns the config file's contents, or nil when it does
+// not exist.
+func readConfigFile(t *testing.T) []byte {
+	t.Helper()
+	path, err := config.Path()
+	if err != nil {
+		t.Fatalf("config.Path() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("reading the config file: %v", err)
+	}
+	return data
+}
+
+// assertConfigUnchanged checks the config file against what it held before
+// the run — including never having existed, for which want is nil.
+func assertConfigUnchanged(t *testing.T, want []byte) {
+	t.Helper()
+	got := readConfigFile(t)
+	if want == nil {
+		if got != nil {
+			t.Errorf("config file was created, contents = %s", got)
+		}
+		return
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("config file = %s, want it unchanged at %s", got, want)
+	}
+}
+
+// TestAuthLoginInterruptedAtPromptSavesNothing covers Ctrl-C at each prompt.
+// The data source cases are the ones that used to save the profile and exit
+// 0: the key has already been verified by then, so nothing downstream
+// noticed that the user had given up, and the empty answer their later
+// Enter produced was valid for an optional prompt.
+func TestAuthLoginInterruptedAtPromptSavesNothing(t *testing.T) {
+	tests := []struct {
+		name string
+		// interruptAt indexes authLoginPrompts: every earlier prompt is
+		// answered and the run is interrupted at this one.
+		interruptAt int
+		seed        *config.Config
+	}{
+		{name: "the URL prompt", interruptAt: 0},
+		{name: "the API key prompt", interruptAt: 1},
+		{name: "the profile name prompt", interruptAt: 2},
+		{name: "the data source prompt", interruptAt: 3},
+		{
+			name:        "the data source prompt over an existing profile",
+			interruptAt: 3,
+			seed: &config.Config{
+				ActiveProfile: "staging",
+				Profiles:      map[string]config.Profile{"staging": {URL: "https://old.example.com", APIKey: "old-key"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			if tt.seed != nil {
+				if err := tt.seed.Save(); err != nil {
+					t.Fatalf("seeding the config: %v", err)
+				}
+			}
+			before := readConfigFile(t)
+			srv := (&fakeServer{}).start(t)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			stdin := newInterruptedStdin(t, cancel, authLoginAnswers(srv.URL)[:tt.interruptAt]...)
+			out, err := runRdshWithStdin(t, ctx, stdin, "auth", "login")
+			assertInterrupted(t, out, err)
+
+			// Pinning the whole output covers three things at once: the run
+			// stopped at this prompt, the cancelled prompt ended its own
+			// line so the error starts on a fresh one, and nothing reached
+			// stdout (the two streams share this buffer).
+			want := strings.Join(authLoginPrompts[:tt.interruptAt+1], "") + "\n"
+			if out != want {
+				t.Errorf("output = %q, want %q", out, want)
+			}
+			assertConfigUnchanged(t, before)
+		})
+	}
+}
+
+// TestAuthLoginInterruptedWithFinalAnswerSavesNothing covers a signal that
+// arrives together with the final answer rather than in place of it: the
+// run must still save nothing.
+//
+// It does not reach runAuthLogin's pre-save context check. Cancelling from
+// inside the read means the context is already done by the time the prompt
+// selects on it, so the prompt wins every time (verified by deleting the
+// check: this test still passed 500 runs). That check covers a signal
+// landing after the last prompt returned, which nothing here can schedule —
+// it is a second line of defence, not the mechanism under test.
+func TestAuthLoginInterruptedWithFinalAnswerSavesNothing(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	srv := (&fakeServer{}).start(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Interrupt as the final answer is served, rather than in place of it.
+	answers := authLoginAnswers(srv.URL)
+	stdin := newScriptedStdin(t, cancel, len(answers)-1, answers)
+	out, err := runRdshWithStdin(t, ctx, stdin, "auth", "login")
+	assertInterrupted(t, out, err)
+	assertConfigUnchanged(t, nil)
+}
+
+// TestAuthLoginSignalAtPromptAborts drives the real signals rather than a
+// bare context cancellation, so SIGTERM is covered alongside SIGINT.
+func TestAuthLoginSignalAtPromptAborts(t *testing.T) {
+	// Pinning the list rather than just iterating it: iterating alone would
+	// still pass if Execute stopped registering SIGTERM.
+	signals := []os.Signal{os.Interrupt, syscall.SIGTERM}
+	if got := interruptSignals(); !slices.Equal(got, signals) {
+		t.Fatalf("interruptSignals() = %v, want %v", got, signals)
+	}
+
+	self, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatalf("os.FindProcess() error = %v", err)
+	}
+
+	for _, sig := range signals {
+		t.Run(sig.String(), func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			srv := (&fakeServer{}).start(t)
+
+			// The same registration Execute makes, so the signal is handled
+			// here instead of terminating the test binary.
+			ctx, stop := signal.NotifyContext(context.Background(), sig)
+			defer stop()
+
+			stdin := newInterruptedStdin(t, func() {
+				if err := self.Signal(sig); err != nil {
+					t.Errorf("sending %v to the test process: %v", sig, err)
+				}
+			}, authLoginAnswers(srv.URL)[:2]...)
+
+			out, err := runRdshWithStdin(t, ctx, stdin, "auth", "login")
+			assertInterrupted(t, out, err)
+			assertConfigUnchanged(t, nil)
+		})
+	}
+}
+
+// TestAuthLoginRejectsNonTTYStdin pins the guard that sends piped callers to
+// the env pair: the masked prompt cannot run without a terminal.
+func TestAuthLoginRejectsNonTTYStdin(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	// A pipe is an *os.File that is not a terminal — what stdin looks like
+	// under `rdsh auth login < /dev/null`.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := r.Close(); err != nil {
+			t.Errorf("closing the read end of the pipe: %v", err)
+		}
+	})
+	if _, err := w.WriteString("https://redash.example.com\n"); err != nil {
+		t.Fatalf("writing to the pipe: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("closing the write end of the pipe: %v", err)
+	}
+
+	out, err := runRdshWithStdin(t, context.Background(), r, "auth", "login")
+	if err == nil || !strings.Contains(err.Error(), "needs a terminal") {
+		t.Fatalf("error = %v, want the needs-a-terminal error", err)
+	}
+	if out != "" {
+		t.Errorf("output = %q, want the command to refuse before prompting", out)
+	}
+	assertConfigUnchanged(t, nil)
 }
 
 func TestProfileUseAndList(t *testing.T) {
