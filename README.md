@@ -53,7 +53,11 @@ The default timeout is 90s; exceeding it exits with code 124, cancelling the ser
 rdsh query -f heavy.sql --timeout 30m
 ```
 
+### Interrupts
+
 Ctrl-C and `SIGTERM` cancel the in-flight query rather than leaving it to run to completion. At an `rdsh auth login` prompt they end the command straight away, without writing or changing a profile.
+
+An interrupted run is not reported as a failure: rdsh prints nothing and terminates by the signal itself, so a shell sees the same thing it sees from `curl` or `git` and a loop over `rdsh` invocations stops. Interrupt a second time to skip waiting for the server-side job to be cancelled.
 
 ## Agent Skill
 

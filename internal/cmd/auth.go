@@ -117,9 +117,10 @@ func runAuthLogin(cmd *cobra.Command, _ []string) error {
 }
 
 // errInterrupted reports a run that a signal ended before anything was
-// saved. rdsh classifies no other context error, so this message has to
-// read as an interruption on its own: Execute prints it as it is and
-// exitCode falls through to 1.
+// saved. Its job is to unwind runAuthLogin from whichever prompt was
+// waiting; the text is for a reader of a stack of wrapped errors, not for
+// the user, since Execute discards the error of a signalled run rather
+// than reporting it.
 var errInterrupted = errors.New("interrupted, nothing saved")
 
 // readCancellable runs a blocking read and gives up on it as soon as ctx is
@@ -155,8 +156,8 @@ func readCancellable[T any](ctx context.Context, read func() (T, error)) (T, err
 
 // readLine reads one trimmed line. A cancelled read also ends the prompt
 // line: the interrupt does not end it itself — the terminal echoes at most
-// "^C" — so without this the error Execute prints would continue the
-// prompt rather than start its own line.
+// "^C", and nothing at all at the masked prompt — so without this whatever
+// the shell writes next would continue the half-written prompt line.
 //
 // The cancellation is checked before the io.EOF case below, which reports a
 // prompt the input simply ran out on as an empty answer; letting the
