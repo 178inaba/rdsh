@@ -38,7 +38,22 @@ type rdshProcess struct {
 // returns as soon as it has started.
 func startRdsh(t *testing.T, srv *httptest.Server, args ...string) *rdshProcess {
 	t.Helper()
-	p := &rdshProcess{cmd: exec.Command(os.Args[0], args...)}
+	return start(t, srv, exec.Command(os.Args[0], args...))
+}
+
+// startRdshIgnoringInterrupt is startRdsh with SIGINT already set to
+// SIG_IGN, which is what a shell hands a background job. trap '' INT sets
+// the disposition and exec keeps it, so the process this returns is rdsh
+// itself, ignoring the signal before it ever runs.
+func startRdshIgnoringInterrupt(t *testing.T, srv *httptest.Server, args ...string) *rdshProcess {
+	t.Helper()
+	argv := append([]string{"-c", `trap '' INT; exec "$0" "$@"`, os.Args[0]}, args...)
+	return start(t, srv, exec.Command("sh", argv...))
+}
+
+func start(t *testing.T, srv *httptest.Server, cmd *exec.Cmd) *rdshProcess {
+	t.Helper()
+	p := &rdshProcess{cmd: cmd}
 	// Appended last so these win over anything the developer's own shell
 	// exported: duplicate keys resolve to the last value.
 	p.cmd.Env = append(os.Environ(),
@@ -220,6 +235,25 @@ func TestExecuteSecondSignalDuringJobCancellationEndsAtOnce(t *testing.T) {
 				t.Errorf("rdsh took %s to end, want it not to wait the job cancellation out", elapsed)
 			}
 		})
+	}
+}
+
+// TestExecuteUndeliverableSignalStillExits covers a signal rdsh cannot
+// re-raise. A shell hands a background job SIGINT as SIG_IGN, signal.Reset
+// puts that back, and Kill then reports success for a signal that never
+// arrives. The run still has to end: waiting for a death that cannot come
+// would wedge the process for good, which is worse than the misreported
+// exit this all fixes. What is left is the status a shell would have
+// reported had the signal landed.
+func TestExecuteUndeliverableSignalStillExits(t *testing.T) {
+	f := &fakeServer{neverDone: true}
+	srv := f.start(t)
+
+	p := startRdshIgnoringInterrupt(t, srv, "query", "SELECT pg_sleep(600)", "--data-source", "5")
+	f.waitFor(t, pollRequest)
+	p.signal(t, syscall.SIGINT)
+	if errOut := p.assertExited(t, 128+int(syscall.SIGINT)); errOut != "" {
+		t.Errorf("stderr = %q, want no failure report", errOut)
 	}
 }
 
