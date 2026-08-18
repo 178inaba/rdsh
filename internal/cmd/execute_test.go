@@ -276,7 +276,8 @@ func TestExecuteOrdinaryFailureExitsOne(t *testing.T) {
 	srv := (&fakeServer{}).start(t)
 
 	p := startRdsh(t, srv, "query", "SELECT 1", "--profile", "nope", "--data-source", "5")
-	if errOut := p.assertExited(t, 1); !strings.Contains(errOut, "Error:") {
+	errOut := p.assertExited(t, 1)
+	if !strings.Contains(errOut, "Error:") || !strings.Contains(errOut, "nope") {
 		t.Errorf("stderr = %q, want a reported failure naming the profile", errOut)
 	}
 }

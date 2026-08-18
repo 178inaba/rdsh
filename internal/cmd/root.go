@@ -102,6 +102,10 @@ func Execute() int {
 		// waits for a process death that never comes.
 		signal.Reset(signals...)
 
+		// Handing the signal on before cancelling, for the same kind of
+		// reason: cancelling first would let the command unwind and the
+		// receive below run while this send is still pending, and the run
+		// would be reported as the failure the cancellation produced.
 		received <- sig
 		cancel()
 	}()
