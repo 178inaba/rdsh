@@ -42,9 +42,9 @@ func startRdsh(t *testing.T, srv *httptest.Server, args ...string) *rdshProcess 
 }
 
 // startRdshIgnoringInterrupt is startRdsh with SIGINT already set to
-// SIG_IGN, which is what a shell hands a background job. trap '' INT sets
-// the disposition and exec keeps it, so the process this returns is rdsh
-// itself, ignoring the signal before it ever runs.
+// SIG_IGN, which is what a shell hands a background job. An empty trap for
+// INT sets that disposition and exec keeps it, so the process this returns
+// is rdsh itself, ignoring the signal before it ever runs.
 func startRdshIgnoringInterrupt(t *testing.T, srv *httptest.Server, args ...string) *rdshProcess {
 	t.Helper()
 	argv := append([]string{"-c", `trap '' INT; exec "$0" "$@"`, os.Args[0]}, args...)

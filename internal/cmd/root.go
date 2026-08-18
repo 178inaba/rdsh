@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"sync/atomic"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -61,8 +60,11 @@ func interruptSignals() []os.Signal {
 	return []os.Signal{os.Interrupt, syscall.SIGTERM}
 }
 
-// Execute runs the root command and returns the process exit code, unless a
-// signal ends the run: then it re-raises that signal and never returns.
+// Execute runs the root command and returns the process exit code. A run a
+// signal ended reports nothing and dies of that signal instead, so on unix
+// this usually does not return at all; what it returns there is only for
+// the platforms and dispositions that cannot deliver one.
+//
 // SIGINT and SIGTERM cancel the command context so a running query can
 // cancel its server-side job before the process goes, and so `auth login`
 // abandons a prompt it is waiting on.
@@ -79,10 +81,11 @@ func Execute() int {
 	signals := interruptSignals()
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, signals...)
+	defer signal.Stop(ch)
 
-	// The signal that arrived, or nil. Written by the watcher and read
-	// below, so it has to be atomic.
-	var received atomic.Pointer[os.Signal]
+	// The signal that arrived, if one did. Buffered so the watcher can
+	// hand it over and finish whether or not anyone is left to read it.
+	received := make(chan os.Signal, 1)
 	go func() {
 		sig := <-ch // os/signal never closes the channel
 
@@ -92,15 +95,14 @@ func Execute() int {
 		// there is no second code path to write. A SIGTERM following a
 		// SIGINT would still be swallowed if only the latter were reset.
 		//
-		// It has to happen before the recording, not after: sync/atomic is
-		// sequentially consistent, so a goroutine that sees the recorded
-		// signal is guaranteed to see this call already returned. The
-		// other order leaves a window in which the re-raise lands in this
-		// channel, which nobody reads any more, and dieOfSignal then waits
-		// for a process death that never comes.
+		// It has to happen before the signal is handed on, not after: a
+		// receive from received then guarantees this call has returned.
+		// The other order leaves a window in which the re-raise lands in
+		// the channel above, which nobody reads any more, and dieOfSignal
+		// waits for a process death that never comes.
 		signal.Reset(signals...)
 
-		received.Store(&sig)
+		received <- sig
 		cancel()
 	}()
 
@@ -112,8 +114,10 @@ func Execute() int {
 	// the signal interrupted — so none of them is reported or mapped to an
 	// exit code. Discarding the error unread is also what keeps an
 	// interrupted run from ever being called a timeout.
-	if sig := received.Load(); sig != nil {
-		return dieOfSignal(*sig)
+	select {
+	case sig := <-received:
+		return dieOfSignal(sig)
+	default:
 	}
 
 	if err != nil {

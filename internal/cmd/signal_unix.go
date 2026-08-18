@@ -37,10 +37,9 @@ func dieOfSignal(sig os.Signal) int {
 		// Unreachable: every signal interruptSignals lists is one.
 		return 1
 	}
-	if err := syscall.Kill(syscall.Getpid(), s); err != nil {
-		return signalExitCode(s)
+	if err := syscall.Kill(syscall.Getpid(), s); err == nil {
+		time.Sleep(deliveryGrace)
 	}
-	time.Sleep(deliveryGrace)
 	return signalExitCode(s)
 }
 
