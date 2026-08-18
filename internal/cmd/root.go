@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -53,22 +54,68 @@ func newRootCmd() *cobra.Command {
 	return cmd
 }
 
-// interruptSignals lists the signals Execute cancels the command context
-// on. It is a function so tests can assert the registered set without a
-// second copy of the list to keep in step.
+// interruptSignals lists the signals Execute cancels the command context on
+// and then dies of. It is a function so tests can assert the registered set
+// without a second copy of the list to keep in step.
 func interruptSignals() []os.Signal {
 	return []os.Signal{os.Interrupt, syscall.SIGTERM}
 }
 
-// Execute runs the root command and returns the process exit code. SIGINT
-// and SIGTERM cancel the command context so a running query can cancel its
-// server-side job before the process exits, and so `auth login` abandons a
-// prompt it is waiting on.
+// Execute runs the root command and returns the process exit code, unless a
+// signal ends the run: then it re-raises that signal and never returns.
+// SIGINT and SIGTERM cancel the command context so a running query can
+// cancel its server-side job before the process goes, and so `auth login`
+// abandons a prompt it is waiting on.
+//
+// An explicit channel rather than signal.NotifyContext, which can support
+// neither half of that: its cancellation cause is an unexported type that
+// is not an os.Signal, so the signal cannot be recovered to re-raise it,
+// and it keeps the handler installed for the whole run, which swallows a
+// second signal sent during a slow clean-up.
 func Execute() int {
-	ctx, stop := signal.NotifyContext(context.Background(), interruptSignals()...)
-	defer stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	signals := interruptSignals()
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, signals...)
+
+	// The signal that arrived, or nil. Written by the watcher and read
+	// below, so it has to be atomic.
+	var received atomic.Pointer[os.Signal]
+	go func() {
+		sig := <-ch // os/signal never closes the channel
+
+		// Resetting every registered signal rather than the one that
+		// arrived is what makes a second signal end the process at once:
+		// it meets the default disposition instead of this handler, so
+		// there is no second code path to write. A SIGTERM following a
+		// SIGINT would still be swallowed if only the latter were reset.
+		//
+		// It has to happen before the recording, not after: sync/atomic is
+		// sequentially consistent, so a goroutine that sees the recorded
+		// signal is guaranteed to see this call already returned. The
+		// other order leaves a window in which the re-raise lands in this
+		// channel, which nobody reads any more, and dieOfSignal then waits
+		// for a process death that never comes.
+		signal.Reset(signals...)
+
+		received.Store(&sig)
+		cancel()
+	}()
 
 	err := newRootCmd().ExecuteContext(ctx)
+
+	// The signal is checked before the error is even looked at. A run the
+	// user stopped did not fail, whatever error unwound it — a cancelled
+	// context, an abandoned prompt, or a --timeout expiry whose clean-up
+	// the signal interrupted — so none of them is reported or mapped to an
+	// exit code. Discarding the error unread is also what keeps an
+	// interrupted run from ever being called a timeout.
+	if sig := received.Load(); sig != nil {
+		return dieOfSignal(*sig)
+	}
+
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 	}

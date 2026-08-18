@@ -16,19 +16,36 @@ import (
 	"time"
 )
 
+// Requests an interrupt test waits for before signalling, so the signal
+// lands with the command in the place the test is about.
+const (
+	pollRequest        = "poll"
+	cancelRequest      = "cancel"
+	dataSourcesRequest = "data sources"
+)
+
 // fakeServer emulates just enough of Redash for the command layer: the
 // submit response already carries a finished (or never-finishing) job so
-// tests do not depend on the client's poll interval.
+// tests do not depend on the client's poll interval. The hang* fields make
+// an endpoint never answer, standing in for a wedged Redash; they are set
+// before start and never written afterwards.
 type fakeServer struct {
 	mu            sync.Mutex
 	neverDone     bool // job stays PENDING forever; used by timeout tests
 	rejectSession bool // GET /api/session returns 401; used by login tests
+	hangCancel    bool // DELETE /api/jobs/... never answers
+	hangList      bool // GET /api/data_sources never answers
 	cancelled     bool
 	submitted     bool
+
+	reached chan string   // requests that arrived, for waitFor
+	release chan struct{} // closed on cleanup, freeing parked handlers
 }
 
 func (f *fakeServer) start(t *testing.T) *httptest.Server {
 	t.Helper()
+	f.reached = make(chan string, 8)
+	f.release = make(chan struct{})
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/query_results", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -41,12 +58,18 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 		mustJSON(w, map[string]any{"job": job})
 	})
 	mux.HandleFunc("GET /api/jobs/job-1", func(w http.ResponseWriter, r *http.Request) {
+		f.reach(pollRequest)
 		mustJSON(w, map[string]any{"job": map[string]any{"id": "job-1", "status": 1}})
 	})
 	mux.HandleFunc("DELETE /api/jobs/job-1", func(w http.ResponseWriter, r *http.Request) {
+		f.reach(cancelRequest)
 		f.mu.Lock()
 		f.cancelled = true
 		f.mu.Unlock()
+		if f.hangCancel {
+			f.park(r)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("GET /api/query_results/42", func(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +79,11 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 		}}})
 	})
 	mux.HandleFunc("GET /api/data_sources", func(w http.ResponseWriter, r *http.Request) {
+		f.reach(dataSourcesRequest)
+		if f.hangList {
+			f.park(r)
+			return
+		}
 		mustJSON(w, []map[string]any{{"id": 7, "name": "warehouse"}})
 	})
 	mux.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +99,46 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	// Registered after srv.Close so it runs before it: cleanups are LIFO,
+	// and Close waits for the very handlers this releases.
+	t.Cleanup(func() { close(f.release) })
 	return srv
+}
+
+// park holds a request until the test's cleanup releases it or the client
+// gives up, standing in for an endpoint that never answers.
+func (f *fakeServer) park(r *http.Request) {
+	select {
+	case <-f.release:
+	case <-r.Context().Done():
+	}
+}
+
+// reach announces that a request arrived. The send never blocks: a test
+// waits for the one request it cares about and ignores the rest.
+func (f *fakeServer) reach(name string) {
+	select {
+	case f.reached <- name:
+	default:
+	}
+}
+
+// waitFor blocks until the named request has reached the server, so a test
+// signals a command that has actually got there.
+func (f *fakeServer) waitFor(t *testing.T, name string) {
+	t.Helper()
+	timer := time.NewTimer(commandReturnTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case got := <-f.reached:
+			if got == name {
+				return
+			}
+		case <-timer.C:
+			t.Fatalf("the %s request never reached the server", name)
+		}
+	}
 }
 
 func mustJSON(w http.ResponseWriter, v any) {
