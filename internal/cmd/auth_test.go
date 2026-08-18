@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http/httptest"
@@ -161,22 +162,19 @@ func newInterruptedStdin(t *testing.T, interrupt func(), answers ...string) *scr
 	return newScriptedStdin(t, interrupt, len(answers), answers)
 }
 
-// assertInterrupted checks the outcome every interrupted run shares: the
-// command fails, exits 1, and says it was interrupted without dragging in
-// the empty-answer complaint that an unwatched prompt used to produce.
+// assertInterrupted checks what an interrupted run looks like below
+// Execute: the command unwinds with the interruption sentinel rather than
+// the empty-answer complaint an unwatched prompt used to produce, and that
+// sentinel is not one exitCode singles out. A real run never gets as far as
+// that exit code — Execute dies of the signal first (execute_test.go) — but
+// this is the mapping that would apply if it did.
 func assertInterrupted(t *testing.T, out string, err error) {
 	t.Helper()
-	if err == nil {
-		t.Fatalf("error = nil, want an interruption; output = %q", out)
+	if !errors.Is(err, errInterrupted) {
+		t.Fatalf("error = %v, want %v; output = %q", err, errInterrupted, out)
 	}
 	if got := exitCode(err); got != 1 {
 		t.Errorf("exitCode(%v) = %d, want 1", err, got)
-	}
-	if !strings.Contains(err.Error(), "interrupted") {
-		t.Errorf("error = %v, want it to read as an interruption", err)
-	}
-	if strings.Contains(err.Error(), "must not be empty") {
-		t.Errorf("error = %v, want no empty-answer complaint", err)
 	}
 }
 
@@ -317,8 +315,10 @@ func TestAuthLoginSignalAtPromptAborts(t *testing.T) {
 			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 			srv := (&fakeServer{}).start(t)
 
-			// The same registration Execute makes, so the signal is handled
-			// here instead of terminating the test binary.
+			// Handling the signal here is what keeps it from terminating
+			// the test binary; Execute is deliberately not in the way,
+			// since it would answer by re-raising and killing this
+			// process. What that leaves observable is the prompt aborting.
 			ctx, stop := signal.NotifyContext(context.Background(), sig)
 			defer stop()
 
