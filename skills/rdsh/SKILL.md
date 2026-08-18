@@ -31,6 +31,7 @@ SQL
 
 - The 90 s default timeout suits synchronous runs. Exit code 124 means the query timed out (the server-side job is cancelled best-effort): re-run with a longer `--timeout` (e.g. `10m`) in a background shell. `--timeout 0` (unlimited) is for background runs only.
 - Any other failure exits 1. Read stderr before acting: a SQL error means fix the query; an auth, network, or configuration error means fix the environment or stop and report. Neither is solved by retrying with a longer timeout.
+- An interrupt (Ctrl-C or `SIGTERM`) is not a failure and prints nothing: rdsh terminates by the signal, which a shell reports as 130 or 143. Do not retry — someone asked the run to stop.
 
 ## Profiles
 
