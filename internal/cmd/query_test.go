@@ -10,9 +10,10 @@ import (
 	"testing"
 )
 
-// wantURL is the line query create prints for the query the fake saves.
-func wantURL(srv *httptest.Server) string {
-	return fmt.Sprintf("%s/queries/%d\n", srv.URL, savedQueryID)
+// savedQueryURL is where the query the fake saves is read in a browser:
+// what create prints on success, and what a failed publish has to report.
+func savedQueryURL(srv *httptest.Server) string {
+	return fmt.Sprintf("%s/queries/%d", srv.URL, savedQueryID)
 }
 
 func TestQueryCreatePublishesAndPrintsURL(t *testing.T) {
@@ -23,7 +24,7 @@ func TestQueryCreatePublishesAndPrintsURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query create error = %v", err)
 	}
-	if want := wantURL(srv); out != want {
+	if want := savedQueryURL(srv) + "\n"; out != want {
 		t.Errorf("output = %q, want %q and nothing else", out, want)
 	}
 
@@ -48,7 +49,7 @@ func TestQueryCreateDraft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query create --draft error = %v", err)
 	}
-	if want := wantURL(srv); out != want {
+	if want := savedQueryURL(srv) + "\n"; out != want {
 		t.Errorf("output = %q, want %q", out, want)
 	}
 
@@ -144,10 +145,10 @@ func TestQueryCreatePublishTimeoutIsNotATimeout(t *testing.T) {
 	f := &fakeServer{hangPublish: true}
 	srv := f.start(t)
 
-	// Long enough that only the parked publish can reach the deadline; the
-	// create before it answers immediately.
+	// The create before it answers at once, so only the parked publish can
+	// reach the deadline.
 	out, err := runRdsh(t, srv, "", "query", "create", "--name", "signups", "SELECT 1",
-		"--data-source", "5", "--timeout", "500ms")
+		"--data-source", "5", "--timeout", "50ms")
 	if err == nil {
 		t.Fatalf("output = %q, want a reported failure", out)
 	}
@@ -161,7 +162,7 @@ func TestQueryCreatePublishTimeoutIsNotATimeout(t *testing.T) {
 // create whose publish failed: that the query exists as a draft, and where.
 func assertUnpublishedReport(t *testing.T, err error, srv *httptest.Server) {
 	t.Helper()
-	url := fmt.Sprintf("%s/queries/%d", srv.URL, savedQueryID)
+	url := savedQueryURL(srv)
 	if !strings.Contains(err.Error(), url) {
 		t.Errorf("error = %v, want the query URL %s", err, url)
 	}

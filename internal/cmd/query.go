@@ -18,34 +18,28 @@ func newQueryCmd(g *globalFlags) *cobra.Command {
 		// A group command is not runnable, and cobra answers an argument
 		// that is not one of its subcommands by printing help to stdout and
 		// returning nil — a success, on the stream results are read from.
-		// The Args and RunE below are what report it instead. #27 fixes the
-		// same hole for every group at the root; this can go when it lands.
-		Args: cobra.ArbitraryArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
-			return fmt.Errorf("unknown command %q for %q", args[0], cmd.CommandPath())
+		// A RunE makes the group runnable, which is what gets cobra as far
+		// as validating the arguments; NoArgs then reports the stray one.
+		// #27 fixes the same hole for every group at the root, and this can
+		// go when it lands.
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
 		},
 	}
 	cmd.AddCommand(newQueryCreateCmd(g))
 	return cmd
 }
 
-// queryCreateFlags carries newQueryCreateCmd's flag values into its RunE,
-// the way globalFlags does for the root ones: bound at construction, read
-// only once the closure runs and parsing has settled them.
-type queryCreateFlags struct {
-	name        string
-	description string
-	file        string
-	dataSource  string
-	draft       bool
-	timeout     time.Duration
-}
-
 func newQueryCreateCmd(g *globalFlags) *cobra.Command {
-	var f queryCreateFlags
+	var (
+		name        string
+		description string
+		file        string
+		dataSource  string
+		draft       bool
+		timeout     time.Duration
+	)
 	cmd := &cobra.Command{
 		Use:   "create --name <name> [sql]",
 		Short: "Save SQL as a Redash query and print its URL",
@@ -58,29 +52,29 @@ result to the new query, so the URL opens with data already on it.
 The query is published unless --draft is given.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQueryCreate(cmd, args, g, &f)
+			return runQueryCreate(cmd, args, g, name, description, file, dataSource, draft, timeout)
 		},
 	}
-	cmd.Flags().StringVar(&f.name, "name", "", "name of the saved query (required)")
-	cmd.Flags().StringVar(&f.description, "description", "", "description of the saved query")
-	cmd.Flags().StringVarP(&f.file, "file", "f", "", "read SQL from a file")
-	cmd.Flags().StringVar(&f.dataSource, "data-source", "", "data source ID or name (default: the profile's data source)")
-	cmd.Flags().BoolVar(&f.draft, "draft", false, "leave the query a draft instead of publishing it")
-	cmd.Flags().DurationVar(&f.timeout, "timeout", defaultTimeout, "give up on the server after this duration (0 = no limit)")
+	cmd.Flags().StringVar(&name, "name", "", "name of the saved query (required)")
+	cmd.Flags().StringVar(&description, "description", "", "description of the saved query")
+	cmd.Flags().StringVarP(&file, "file", "f", "", "read SQL from a file")
+	cmd.Flags().StringVar(&dataSource, "data-source", "", "data source ID or name (default: the profile's data source)")
+	cmd.Flags().BoolVar(&draft, "draft", false, "leave the query a draft instead of publishing it")
+	cmd.Flags().DurationVar(&timeout, "timeout", defaultTimeout, "give up on the server after this duration (0 = no limit)")
 	return cmd
 }
 
-func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, f *queryCreateFlags) error {
+func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, description, file, dataSource string, draft bool, timeout time.Duration) error {
 	// Both checks come before anything that talks to the server, so a bad
 	// invocation cannot leave a query behind.
-	if f.timeout < 0 {
-		return fmt.Errorf("--timeout must not be negative (got %s)", f.timeout)
+	if timeout < 0 {
+		return fmt.Errorf("--timeout must not be negative (got %s)", timeout)
 	}
-	if f.name == "" {
+	if name == "" {
 		return errors.New("--name is required")
 	}
 
-	sql, err := readSQL(cmd, args, f.file)
+	sql, err := readSQL(cmd, args, file)
 	if err != nil {
 		return err
 	}
@@ -92,13 +86,13 @@ func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, f *queryC
 	client := redash.NewClient(conn.URL, conn.APIKey)
 
 	ctx := cmd.Context()
-	if f.timeout > 0 {
+	if timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, f.timeout)
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 
-	dsID, err := resolveDataSource(ctx, client, f.dataSource, conn.DataSource)
+	dsID, err := resolveDataSource(ctx, client, dataSource, conn.DataSource)
 	if err != nil {
 		return err
 	}
@@ -107,20 +101,20 @@ func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, f *queryC
 	// query was never saved, or it was and its ID never arrived, so there
 	// is nothing to report but the expiry.
 	q, err := client.CreateQuery(ctx, redash.NewQuery{
-		Name:         f.name,
+		Name:         name,
 		Query:        sql,
 		DataSourceID: dsID,
-		Description:  f.description,
+		Description:  description,
 	})
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("%w after %s (use --timeout to allow more time): %v", errTimeout, f.timeout, err)
+			return fmt.Errorf("%w after %s (use --timeout to allow more time): %v", errTimeout, timeout, err)
 		}
 		return err
 	}
 
 	url := client.QueryURL(q.ID)
-	if !f.draft {
+	if !draft {
 		// Redash saves every new query as a draft, so publishing is this
 		// second call rather than a field on the create.
 		draft := false

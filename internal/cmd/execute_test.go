@@ -3,7 +3,6 @@ package cmd
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -294,7 +293,7 @@ func TestExecuteCreatedButUnpublishedExitsOne(t *testing.T) {
 
 	p := startRdsh(t, srv, "query", "create", "--name", "signups", "SELECT 1", "--data-source", "5")
 	errOut := p.assertExited(t, 1)
-	url := fmt.Sprintf("%s/queries/%d", srv.URL, savedQueryID)
+	url := savedQueryURL(srv)
 	if !strings.Contains(errOut, url) || !strings.Contains(errOut, "draft") {
 		t.Errorf("stderr = %q, want the query URL %s and that it remains a draft", errOut, url)
 	}
