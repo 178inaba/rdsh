@@ -5,7 +5,7 @@ description: Use rdsh for ad-hoc SQL on Redash. Trigger when the user wants to q
 
 # rdsh — ad-hoc SQL on Redash
 
-One query is one `rdsh query` invocation; the result prints to stdout. `rdsh --help` and the subcommand `--help`s are the source of truth for syntax (this skill covers workflow only) — consult them for anything not covered here.
+One query is one `rdsh run` invocation; the result prints to stdout. `rdsh --help` and the subcommand `--help`s are the source of truth for syntax (this skill covers workflow only) — consult them for anything not covered here.
 
 ## Prerequisites — stop and report if missing
 
@@ -17,7 +17,7 @@ One query is one `rdsh query` invocation; the result prints to stdout. `rdsh --h
 Pass generated SQL via stdin with a quoted heredoc — it avoids shell-quoting issues:
 
 ```sh
-rdsh query --data-source <id-or-name> <<'SQL'
+rdsh run --data-source <id-or-name> <<'SQL'
 SELECT ...
 SQL
 ```

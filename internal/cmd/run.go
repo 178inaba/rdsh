@@ -23,7 +23,7 @@ var errTimeout = errors.New("query timed out")
 
 const defaultTimeout = 90 * time.Second
 
-func newQueryCmd(g *globalFlags) *cobra.Command {
+func newRunCmd(g *globalFlags) *cobra.Command {
 	var (
 		file         string
 		dataSource   string
@@ -31,7 +31,7 @@ func newQueryCmd(g *globalFlags) *cobra.Command {
 		timeout      time.Duration
 	)
 	cmd := &cobra.Command{
-		Use:   "query [sql]",
+		Use:   "run [sql]",
 		Short: "Run ad-hoc SQL on Redash and print the result",
 		Long: `Run ad-hoc SQL on Redash and print the result.
 
@@ -39,7 +39,7 @@ SQL is taken from the argument, from --file, or from stdin when neither is
 given. The result cache is always bypassed.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQuery(cmd, args, g, file, dataSource, outputFormat, timeout)
+			return runRun(cmd, args, g, file, dataSource, outputFormat, timeout)
 		},
 	}
 	cmd.Flags().StringVarP(&file, "file", "f", "", "read SQL from a file")
@@ -49,7 +49,7 @@ given. The result cache is always bypassed.`,
 	return cmd
 }
 
-func runQuery(cmd *cobra.Command, args []string, g *globalFlags, file, dataSource string, outputFormat format.Format, timeout time.Duration) error {
+func runRun(cmd *cobra.Command, args []string, g *globalFlags, file, dataSource string, outputFormat format.Format, timeout time.Duration) error {
 	// Fail on a bad --timeout before anything expensive, so it does not let
 	// the query run to completion on the server first. --format needs no
 	// check here: format.Format rejects a typo during flag parsing.
