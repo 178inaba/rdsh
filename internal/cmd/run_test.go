@@ -40,6 +40,7 @@ type fakeServer struct {
 	rejectSession bool // GET /api/session returns 401; used by login tests
 	hangCancel    bool // DELETE /api/jobs/... never answers
 	hangList      bool // GET /api/data_sources never answers
+	hangCreate    bool // POST /api/queries never answers
 	rejectPublish bool // POST /api/queries/<id> returns 400
 	hangPublish   bool // POST /api/queries/<id> never answers
 	cancelled     bool
@@ -97,9 +98,13 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("POST /api/queries", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
-		defer f.mu.Unlock()
 		if err := json.NewDecoder(r.Body).Decode(&f.created); err != nil {
 			t.Errorf("decode created query: %v", err)
+		}
+		f.mu.Unlock()
+		if f.hangCreate {
+			f.park(r)
+			return
 		}
 		mustJSON(w, map[string]any{"id": savedQueryID, "is_draft": true})
 	})

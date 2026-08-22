@@ -138,6 +138,21 @@ func TestQueryCreatePublishFailureReportsDraft(t *testing.T) {
 	assertUnpublishedReport(t, err, srv)
 }
 
+// TestQueryCreateTimeoutIsATimeout pins the ordinary half of the exit code
+// contract for create: a deadline that stops the save itself is reported as
+// a timeout, so an agent re-runs with a longer one. Nothing was saved, or
+// it was and its ID never arrived, so there is nothing else to report.
+func TestQueryCreateTimeoutIsATimeout(t *testing.T) {
+	f := &fakeServer{hangCreate: true}
+	srv := f.start(t)
+
+	_, err := runRdsh(t, srv, "", "query", "create", "--name", "signups", "SELECT 1",
+		"--data-source", "5", "--timeout", "50ms")
+	if !errors.Is(err, errTimeout) {
+		t.Fatalf("error = %v, want errTimeout", err)
+	}
+}
+
 // TestQueryCreatePublishTimeoutIsNotATimeout pins the same exception for a
 // publish the --timeout cut off: 124 would tell an agent to re-run as is,
 // and re-running create saves the query twice.

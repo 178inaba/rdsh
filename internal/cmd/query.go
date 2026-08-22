@@ -117,8 +117,8 @@ func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 	if !draft {
 		// Redash saves every new query as a draft, so publishing is this
 		// second call rather than a field on the create.
-		draft := false
-		if _, err := client.UpdateQuery(ctx, q.ID, redash.QueryUpdate{IsDraft: &draft}); err != nil {
+		isDraft := false
+		if _, err := client.UpdateQuery(ctx, q.ID, redash.QueryUpdate{IsDraft: &isDraft}); err != nil {
 			// Deliberately not reported as a timeout even when the deadline
 			// is what stopped it: 124 tells an agent to re-run the command
 			// as it stands, and a second create saves a second query. The
