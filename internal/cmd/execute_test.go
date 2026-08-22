@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -279,5 +280,25 @@ func TestExecuteOrdinaryFailureExitsOne(t *testing.T) {
 	errOut := p.assertExited(t, 1)
 	if !strings.Contains(errOut, "Error:") || !strings.Contains(errOut, "nope") {
 		t.Errorf("stderr = %q, want a reported failure naming the profile", errOut)
+	}
+}
+
+// TestExecuteCreatedButUnpublishedExitsOne covers the one place the exit
+// code contract bends: a create that saved the query but could not publish
+// it exits 1, not 124, and says where the draft is. The in-process helpers
+// merge both streams into one buffer, so that stdout stays empty — no URL
+// for a caller to read as a success — can only be checked out here.
+func TestExecuteCreatedButUnpublishedExitsOne(t *testing.T) {
+	f := &fakeServer{rejectPublish: true}
+	srv := f.start(t)
+
+	p := startRdsh(t, srv, "query", "create", "--name", "signups", "SELECT 1", "--data-source", "5")
+	errOut := p.assertExited(t, 1)
+	url := fmt.Sprintf("%s/queries/%d", srv.URL, savedQueryID)
+	if !strings.Contains(errOut, url) || !strings.Contains(errOut, "draft") {
+		t.Errorf("stderr = %q, want the query URL %s and that it remains a draft", errOut, url)
+	}
+	if out := p.stdout.String(); out != "" {
+		t.Errorf("stdout = %q, want nothing a caller could read as the created URL", out)
 	}
 }

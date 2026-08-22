@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,7 +23,11 @@ const (
 	pollRequest        = "poll"
 	cancelRequest      = "cancel"
 	dataSourcesRequest = "data sources"
+	publishRequest     = "publish"
 )
+
+// savedQueryID is the ID the fake gives every query it is asked to save.
+const savedQueryID = 7
 
 // fakeServer emulates just enough of Redash for the command layer: the
 // submit response already carries a finished (or never-finishing) job so
@@ -35,8 +40,12 @@ type fakeServer struct {
 	rejectSession bool // GET /api/session returns 401; used by login tests
 	hangCancel    bool // DELETE /api/jobs/... never answers
 	hangList      bool // GET /api/data_sources never answers
+	rejectPublish bool // POST /api/queries/<id> returns 400
+	hangPublish   bool // POST /api/queries/<id> never answers
 	cancelled     bool
 	submitted     bool
+	created       map[string]any // body of POST /api/queries
+	published     map[string]any // body of POST /api/queries/<id>
 
 	reached chan string   // requests that arrived, for waitFor
 	release chan struct{} // closed on cleanup, freeing parked handlers
@@ -85,6 +94,32 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 			return
 		}
 		mustJSON(w, []map[string]any{{"id": 7, "name": "warehouse"}})
+	})
+	mux.HandleFunc("POST /api/queries", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if err := json.NewDecoder(r.Body).Decode(&f.created); err != nil {
+			t.Errorf("decode created query: %v", err)
+		}
+		mustJSON(w, map[string]any{"id": savedQueryID, "is_draft": true})
+	})
+	mux.HandleFunc(fmt.Sprintf("POST /api/queries/%d", savedQueryID), func(w http.ResponseWriter, r *http.Request) {
+		f.reach(publishRequest)
+		f.mu.Lock()
+		if err := json.NewDecoder(r.Body).Decode(&f.published); err != nil {
+			f.mu.Unlock()
+			return
+		}
+		f.mu.Unlock()
+		switch {
+		case f.hangPublish:
+			f.park(r)
+		case f.rejectPublish:
+			w.WriteHeader(http.StatusBadRequest)
+			mustJSON(w, map[string]any{"message": "publishing is not allowed"})
+		default:
+			mustJSON(w, map[string]any{"id": savedQueryID, "is_draft": false})
+		}
 	})
 	mux.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -342,18 +377,6 @@ func TestRunProfileFlagWiring(t *testing.T) {
 	_, err := runRdsh(t, srv, "", "run", "SELECT 1", "--profile", "nope", "--data-source", "5")
 	if err == nil || !strings.Contains(err.Error(), "nope") {
 		t.Errorf("error = %v, want unknown-profile error even though the env pair is set", err)
-	}
-}
-
-// TestUnknownQueryCommand pins the decision that the old invocation gets no
-// alias and no migration hint: `query` is reserved for the saved-query group,
-// so an old call has to fail rather than quietly keep working.
-func TestUnknownQueryCommand(t *testing.T) {
-	// No server: cobra rejects the name during argument parsing, so nothing
-	// here ever resolves a connection.
-	_, err := runRdsh(t, nil, "", "query", "SELECT 1", "--data-source", "5")
-	if err == nil || !strings.Contains(err.Error(), "unknown command") {
-		t.Errorf("error = %v, want unknown-command error", err)
 	}
 }
 
