@@ -206,9 +206,9 @@ func runRdshWithStdin(t *testing.T, ctx context.Context, stdin io.Reader, args .
 
 const wantCSV = "n\n1\n"
 
-func TestQueryFromArgument(t *testing.T) {
+func TestRunFromArgument(t *testing.T) {
 	srv := (&fakeServer{}).start(t)
-	out, err := runRdsh(t, srv, "", "query", "SELECT 1", "--data-source", "5")
+	out, err := runRdsh(t, srv, "", "run", "SELECT 1", "--data-source", "5")
 	if err != nil {
 		t.Fatalf("query error = %v", err)
 	}
@@ -217,9 +217,9 @@ func TestQueryFromArgument(t *testing.T) {
 	}
 }
 
-func TestQueryFromStdin(t *testing.T) {
+func TestRunFromStdin(t *testing.T) {
 	srv := (&fakeServer{}).start(t)
-	out, err := runRdsh(t, srv, "SELECT 1", "query", "--data-source", "5")
+	out, err := runRdsh(t, srv, "SELECT 1", "run", "--data-source", "5")
 	if err != nil {
 		t.Fatalf("query error = %v", err)
 	}
@@ -228,13 +228,13 @@ func TestQueryFromStdin(t *testing.T) {
 	}
 }
 
-func TestQueryFromFile(t *testing.T) {
+func TestRunFromFile(t *testing.T) {
 	srv := (&fakeServer{}).start(t)
 	path := filepath.Join(t.TempDir(), "q.sql")
 	if err := os.WriteFile(path, []byte("SELECT 1"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err := runRdsh(t, srv, "", "query", "-f", path, "--data-source", "5")
+	out, err := runRdsh(t, srv, "", "run", "-f", path, "--data-source", "5")
 	if err != nil {
 		t.Fatalf("query error = %v", err)
 	}
@@ -243,25 +243,25 @@ func TestQueryFromFile(t *testing.T) {
 	}
 }
 
-func TestQueryArgumentAndFileConflict(t *testing.T) {
+func TestRunArgumentAndFileConflict(t *testing.T) {
 	srv := (&fakeServer{}).start(t)
-	_, err := runRdsh(t, srv, "", "query", "SELECT 1", "-f", "q.sql", "--data-source", "5")
+	_, err := runRdsh(t, srv, "", "run", "SELECT 1", "-f", "q.sql", "--data-source", "5")
 	if err == nil || !strings.Contains(err.Error(), "-f") {
 		t.Errorf("error = %v, want conflict error mentioning -f", err)
 	}
 }
 
-func TestQueryEmptyStdin(t *testing.T) {
+func TestRunEmptyStdin(t *testing.T) {
 	srv := (&fakeServer{}).start(t)
-	_, err := runRdsh(t, srv, "   \n", "query", "--data-source", "5")
+	_, err := runRdsh(t, srv, "   \n", "run", "--data-source", "5")
 	if err == nil || !strings.Contains(err.Error(), "no SQL") {
 		t.Errorf("error = %v, want no-SQL error", err)
 	}
 }
 
-func TestQueryJSONFormat(t *testing.T) {
+func TestRunJSONFormat(t *testing.T) {
 	srv := (&fakeServer{}).start(t)
-	out, err := runRdsh(t, srv, "", "query", "SELECT 1", "--data-source", "5", "--format", "json")
+	out, err := runRdsh(t, srv, "", "run", "SELECT 1", "--data-source", "5", "--format", "json")
 	if err != nil {
 		t.Fatalf("query error = %v", err)
 	}
@@ -270,9 +270,9 @@ func TestQueryJSONFormat(t *testing.T) {
 	}
 }
 
-func TestQueryDataSourceByName(t *testing.T) {
+func TestRunDataSourceByName(t *testing.T) {
 	srv := (&fakeServer{}).start(t)
-	out, err := runRdsh(t, srv, "", "query", "SELECT 1", "--data-source", "warehouse")
+	out, err := runRdsh(t, srv, "", "run", "SELECT 1", "--data-source", "warehouse")
 	if err != nil {
 		t.Fatalf("query error = %v", err)
 	}
@@ -281,26 +281,26 @@ func TestQueryDataSourceByName(t *testing.T) {
 	}
 }
 
-func TestQueryDataSourceNameNotFound(t *testing.T) {
+func TestRunDataSourceNameNotFound(t *testing.T) {
 	srv := (&fakeServer{}).start(t)
-	_, err := runRdsh(t, srv, "", "query", "SELECT 1", "--data-source", "nope")
+	_, err := runRdsh(t, srv, "", "run", "SELECT 1", "--data-source", "nope")
 	if err == nil || !strings.Contains(err.Error(), "nope") {
 		t.Errorf("error = %v, want not-found error naming the data source", err)
 	}
 }
 
-func TestQueryNoDataSource(t *testing.T) {
+func TestRunNoDataSource(t *testing.T) {
 	srv := (&fakeServer{}).start(t)
-	_, err := runRdsh(t, srv, "", "query", "SELECT 1")
+	_, err := runRdsh(t, srv, "", "run", "SELECT 1")
 	if err == nil || !strings.Contains(err.Error(), "--data-source") {
 		t.Errorf("error = %v, want error telling the user to pass --data-source", err)
 	}
 }
 
-func TestQueryTimeoutCancelsJob(t *testing.T) {
+func TestRunTimeoutCancelsJob(t *testing.T) {
 	f := &fakeServer{neverDone: true}
 	srv := f.start(t)
-	_, err := runRdsh(t, srv, "", "query", "SELECT pg_sleep(600)", "--data-source", "5", "--timeout", "50ms")
+	_, err := runRdsh(t, srv, "", "run", "SELECT pg_sleep(600)", "--data-source", "5", "--timeout", "50ms")
 	if !errors.Is(err, errTimeout) {
 		t.Fatalf("error = %v, want errTimeout", err)
 	}
@@ -311,10 +311,10 @@ func TestQueryTimeoutCancelsJob(t *testing.T) {
 	}
 }
 
-func TestQueryInvalidFormatFailsBeforeSubmit(t *testing.T) {
+func TestRunInvalidFormatFailsBeforeSubmit(t *testing.T) {
 	f := &fakeServer{}
 	srv := f.start(t)
-	_, err := runRdsh(t, srv, "", "query", "SELECT 1", "--data-source", "5", "--format", "jso")
+	_, err := runRdsh(t, srv, "", "run", "SELECT 1", "--data-source", "5", "--format", "jso")
 	if err == nil || !strings.Contains(err.Error(), "jso") {
 		t.Fatalf("error = %v, want unsupported-format error", err)
 	}
@@ -325,23 +325,35 @@ func TestQueryInvalidFormatFailsBeforeSubmit(t *testing.T) {
 	}
 }
 
-func TestQueryNegativeTimeout(t *testing.T) {
+func TestRunNegativeTimeout(t *testing.T) {
 	f := &fakeServer{}
 	srv := f.start(t)
-	_, err := runRdsh(t, srv, "", "query", "SELECT 1", "--data-source", "5", "--timeout", "-5s")
+	_, err := runRdsh(t, srv, "", "run", "SELECT 1", "--data-source", "5", "--timeout", "-5s")
 	if err == nil || !strings.Contains(err.Error(), "negative") {
 		t.Errorf("error = %v, want negative-timeout error", err)
 	}
 }
 
-// TestQueryProfileFlagWiring exercises the root persistent flag through a
+// TestRunProfileFlagWiring exercises the root persistent flag through a
 // subcommand: --profile must win over the env pair and fail on unknown names.
-func TestQueryProfileFlagWiring(t *testing.T) {
+func TestRunProfileFlagWiring(t *testing.T) {
 	f := &fakeServer{}
 	srv := f.start(t)
-	_, err := runRdsh(t, srv, "", "query", "SELECT 1", "--profile", "nope", "--data-source", "5")
+	_, err := runRdsh(t, srv, "", "run", "SELECT 1", "--profile", "nope", "--data-source", "5")
 	if err == nil || !strings.Contains(err.Error(), "nope") {
 		t.Errorf("error = %v, want unknown-profile error even though the env pair is set", err)
+	}
+}
+
+// TestUnknownQueryCommand pins the decision that the old invocation gets no
+// alias and no migration hint: `query` is reserved for the saved-query group,
+// so an old call has to fail rather than quietly keep working.
+func TestUnknownQueryCommand(t *testing.T) {
+	// No server: cobra rejects the name during argument parsing, so nothing
+	// here ever resolves a connection.
+	_, err := runRdsh(t, nil, "", "query", "SELECT 1", "--data-source", "5")
+	if err == nil || !strings.Contains(err.Error(), "unknown command") {
+		t.Errorf("error = %v, want unknown-command error", err)
 	}
 }
 

@@ -58,7 +58,7 @@ type Config struct {
 }
 
 // Connection is a resolved set of credentials for talking to one Redash
-// instance. DataSource may be empty (the query command then requires
+// instance. DataSource may be empty (the run command then requires
 // --data-source).
 type Connection struct {
 	URL        string

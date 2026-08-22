@@ -42,7 +42,7 @@ func newRootCmd() *cobra.Command {
 	}
 	cmd.PersistentFlags().StringVar(&g.profile, "profile", "", "profile to use for this invocation")
 	cmd.AddCommand(
-		newQueryCmd(&g),
+		newRunCmd(&g),
 		newDataSourceCmd(&g),
 		// auth and profile take no globalFlags: auth login builds its client
 		// from the URL and key it just prompted for, and profile only reads

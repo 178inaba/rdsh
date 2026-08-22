@@ -22,11 +22,11 @@ rdsh auth login
 
 ```sh
 # Run a query (CSV by default; also --format tsv or json)
-rdsh query "SELECT 1"
+rdsh run "SELECT 1"
 
 # From stdin or a file, JSON output, explicit data source
-echo "SELECT id FROM users LIMIT 10" | rdsh query --format json --data-source warehouse
-rdsh query -f query.sql
+echo "SELECT id FROM users LIMIT 10" | rdsh run --format json --data-source warehouse
+rdsh run -f query.sql
 ```
 
 Run `rdsh --help` for the full reference.
@@ -42,7 +42,7 @@ rdsh data-source list
 ### Environment variables
 
 ```sh
-RDSH_URL=https://redash.example.com RDSH_API_KEY=... rdsh query "SELECT 1" --data-source 3
+RDSH_URL=https://redash.example.com RDSH_API_KEY=... rdsh run "SELECT 1" --data-source 3
 ```
 
 ### Timeouts
@@ -50,7 +50,7 @@ RDSH_URL=https://redash.example.com RDSH_API_KEY=... rdsh query "SELECT 1" --dat
 The default timeout is 90s; exceeding it exits with code 124, cancelling the server-side job.
 
 ```sh
-rdsh query -f heavy.sql --timeout 30m
+rdsh run -f heavy.sql --timeout 30m
 ```
 
 ### Interrupts

@@ -178,14 +178,14 @@ func TestExecuteInterruptedRunDiesOfTheSignal(t *testing.T) {
 		{
 			name:    "query polling a job",
 			server:  &fakeServer{neverDone: true},
-			args:    []string{"query", "SELECT pg_sleep(600)", "--data-source", "5"},
+			args:    []string{"run", "SELECT pg_sleep(600)", "--data-source", "5"},
 			waitFor: pollRequest,
 			sig:     syscall.SIGINT,
 		},
 		{
 			name:    "query polling a job, terminated",
 			server:  &fakeServer{neverDone: true},
-			args:    []string{"query", "SELECT pg_sleep(600)", "--data-source", "5"},
+			args:    []string{"run", "SELECT pg_sleep(600)", "--data-source", "5"},
 			waitFor: pollRequest,
 			sig:     syscall.SIGTERM,
 		},
@@ -224,7 +224,7 @@ func TestExecuteSecondSignalDuringJobCancellationEndsAtOnce(t *testing.T) {
 		t.Run("then "+second.String(), func(t *testing.T) {
 			f := &fakeServer{neverDone: true, hangCancel: true}
 			srv := f.start(t)
-			p := startRdsh(t, srv, "query", "SELECT pg_sleep(600)", "--data-source", "5", "--timeout", "50ms")
+			p := startRdsh(t, srv, "run", "SELECT pg_sleep(600)", "--data-source", "5", "--timeout", "50ms")
 			f.waitFor(t, cancelRequest)
 
 			start := time.Now()
@@ -249,7 +249,7 @@ func TestExecuteUndeliverableSignalStillExits(t *testing.T) {
 	f := &fakeServer{neverDone: true}
 	srv := f.start(t)
 
-	p := startRdshIgnoringInterrupt(t, srv, "query", "SELECT pg_sleep(600)", "--data-source", "5")
+	p := startRdshIgnoringInterrupt(t, srv, "run", "SELECT pg_sleep(600)", "--data-source", "5")
 	f.waitFor(t, pollRequest)
 	p.signal(t, syscall.SIGINT)
 	if errOut := p.assertExited(t, 128+int(syscall.SIGINT)); errOut != "" {
@@ -264,7 +264,7 @@ func TestExecuteTimeoutExitsWithTimeoutCode(t *testing.T) {
 	f := &fakeServer{neverDone: true}
 	srv := f.start(t)
 
-	p := startRdsh(t, srv, "query", "SELECT pg_sleep(600)", "--data-source", "5", "--timeout", "50ms")
+	p := startRdsh(t, srv, "run", "SELECT pg_sleep(600)", "--data-source", "5", "--timeout", "50ms")
 	if errOut := p.assertExited(t, timeoutExitCode); !strings.Contains(errOut, "query timed out") {
 		t.Errorf("stderr = %q, want the timeout message", errOut)
 	}
@@ -275,7 +275,7 @@ func TestExecuteTimeoutExitsWithTimeoutCode(t *testing.T) {
 func TestExecuteOrdinaryFailureExitsOne(t *testing.T) {
 	srv := (&fakeServer{}).start(t)
 
-	p := startRdsh(t, srv, "query", "SELECT 1", "--profile", "nope", "--data-source", "5")
+	p := startRdsh(t, srv, "run", "SELECT 1", "--profile", "nope", "--data-source", "5")
 	errOut := p.assertExited(t, 1)
 	if !strings.Contains(errOut, "Error:") || !strings.Contains(errOut, "nope") {
 		t.Errorf("stderr = %q, want a reported failure naming the profile", errOut)
