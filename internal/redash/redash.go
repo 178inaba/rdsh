@@ -277,7 +277,14 @@ func (c *Client) UpdateQuery(ctx context.Context, id int, u QueryUpdate) (*Query
 // QueryURL is where a saved query is read in a browser. The API returns no
 // URL of its own, so it is built from the base URL NewClient normalised.
 func (c *Client) QueryURL(id int) string {
-	return fmt.Sprintf("%s/queries/%d", c.baseURL, id)
+	return fmt.Sprintf("%s%d", c.QueryURLPrefix(), id)
+}
+
+// QueryURLPrefix is what every query URL on this instance begins with. A
+// caller reading a query URL matches against this rather than rebuilding it
+// from the base URL, so the two directions cannot drift apart.
+func (c *Client) QueryURLPrefix() string {
+	return c.baseURL + "/queries/"
 }
 
 // ListDataSources returns the data sources visible to the API key.

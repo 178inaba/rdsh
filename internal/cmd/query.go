@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -179,19 +178,15 @@ func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 	// The SQL argument is recognised by being there at all, not by being
 	// non-empty as it is in create: SQL is optional here, so an empty one
 	// has to stay distinguishable from none at all rather than silently
-	// falling through to --file.
-	sql, hasSQL := "", len(args) == 2
-	switch {
-	case hasSQL && file != "":
-		return errors.New("SQL was given both as an argument and via -f; use only one")
-	case hasSQL:
-		sql = args[1]
-	case file != "":
-		data, err := os.ReadFile(file)
-		if err != nil {
-			return err
-		}
-		sql, hasSQL = string(data), true
+	// falling through to --file. Nothing falls back to stdin either — see
+	// the command's help for why.
+	arg, hasArg := "", len(args) == 2
+	if hasArg {
+		arg = args[1]
+	}
+	sql, hasSQL, err := sqlFromArgOrFile(arg, hasArg, file)
+	if err != nil {
+		return err
 	}
 
 	// Which fields to send comes from whether the flag was given rather
@@ -208,14 +203,12 @@ func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 	if hasSQL {
 		u.Query = &sql
 	}
-	if flags.Changed("publish") || flags.Changed("draft") {
-		// The two flags are mutually exclusive, so at most one of them
-		// decided this; --publish means the opposite of a draft.
-		isDraft := draft
-		if flags.Changed("publish") {
-			isDraft = !publish
-		}
+	switch {
+	case flags.Changed("publish"):
+		isDraft := !publish
 		u.IsDraft = &isDraft
+	case flags.Changed("draft"):
+		u.IsDraft = &draft
 	}
 	if u == (redash.QueryUpdate{}) {
 		return errors.New("nothing to change; pass new SQL, --name, --description, --publish, or --draft")
@@ -225,11 +218,11 @@ func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 	if err != nil {
 		return err
 	}
-	id, err := resolveQueryID(args[0], conn.URL)
+	client := redash.NewClient(conn.URL, conn.APIKey)
+	id, err := resolveQueryID(args[0], client)
 	if err != nil {
 		return err
 	}
-	client := redash.NewClient(conn.URL, conn.APIKey)
 
 	ctx := cmd.Context()
 	if timeout > 0 {
@@ -267,15 +260,16 @@ func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 // clipboard — a trailing segment such as /source, a query string, a
 // fragment — is tolerated.
 //
-// The prefix match runs through /queries/ rather than stopping at the base
-// URL, so a host that merely starts the same way, such as
+// The prefix comes from the client so that reading a URL and printing one
+// stay the same fact. It runs through /queries/ rather than stopping at the
+// base URL, so a host that merely starts the same way, such as
 // redash.example.com.evil.test, cannot pass as the configured instance and
 // send the update somewhere else.
-func resolveQueryID(arg, baseURL string) (int, error) {
+func resolveQueryID(arg string, client *redash.Client) (int, error) {
 	if isDigits(arg) {
 		return strconv.Atoi(arg)
 	}
-	prefix := strings.TrimRight(baseURL, "/") + "/queries/"
+	prefix := client.QueryURLPrefix()
 	rest, ok := strings.CutPrefix(arg, prefix)
 	if !ok {
 		return 0, fmt.Errorf("%q is neither a query ID nor a URL beginning %s", arg, prefix)
@@ -292,8 +286,7 @@ func resolveQueryID(arg, baseURL string) (int, error) {
 // timeoutOr reports err as the timeout it is when the deadline is what
 // stopped it, so the run exits 124 rather than 1. Opting in per call site
 // rather than wrapping on the way out is what leaves create's publish step
-// free to report its expiry as an ordinary failure. #28 folds this and
-// run's identical wrapping into one helper.
+// free to report its expiry as an ordinary failure.
 func timeoutOr(err error, timeout time.Duration) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("%w after %s (use --timeout to allow more time): %v", errTimeout, timeout, err)

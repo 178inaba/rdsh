@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/178inaba/rdsh/internal/redash"
 )
 
 // savedQueryURL is where the query the fake saves is read in a browser:
@@ -254,7 +256,7 @@ func TestResolveQueryID(t *testing.T) {
 			if b == "" {
 				b = base
 			}
-			got, err := resolveQueryID(tt.arg, b)
+			got, err := resolveQueryID(tt.arg, redash.NewClient(b, "k"))
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("resolveQueryID(%q) = %d, want an error", tt.arg, got)
