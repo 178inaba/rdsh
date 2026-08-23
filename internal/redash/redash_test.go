@@ -500,8 +500,7 @@ func listQueryIDs(queries []redash.Query) []int {
 // for, in order. The walking tests assert on this rather than only on the
 // rows: a client that asks for one page too many gets a 400 from the fake,
 // but one that asks for pages it did not need would otherwise pass unseen.
-func pagesRequested(t *testing.T, reqs []listRequest) []string {
-	t.Helper()
+func pagesRequested(reqs []listRequest) []string {
 	pages := make([]string, len(reqs))
 	for i, req := range reqs {
 		pages[i] = req.values.Get("page")
@@ -530,8 +529,8 @@ func TestListQueries(t *testing.T) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if want := []string{"1"}; !reflect.DeepEqual(pagesRequested(t, f.listRequests), want) {
-		t.Errorf("pages requested = %v, want %v", pagesRequested(t, f.listRequests), want)
+	if want := []string{"1"}; !reflect.DeepEqual(pagesRequested(f.listRequests), want) {
+		t.Errorf("pages requested = %v, want %v", pagesRequested(f.listRequests), want)
 	}
 	if got := f.listRequests[0].path; got != "/api/queries" {
 		t.Errorf("path = %q, want /api/queries", got)
@@ -565,8 +564,8 @@ func TestListQueriesWalksPages(t *testing.T) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if want := []string{"1", "2", "3"}; !reflect.DeepEqual(pagesRequested(t, f.listRequests), want) {
-		t.Errorf("pages requested = %v, want %v", pagesRequested(t, f.listRequests), want)
+	if want := []string{"1", "2", "3"}; !reflect.DeepEqual(pagesRequested(f.listRequests), want) {
+		t.Errorf("pages requested = %v, want %v", pagesRequested(f.listRequests), want)
 	}
 }
 
@@ -591,8 +590,8 @@ func TestListQueriesStopsAtCount(t *testing.T) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if want := []string{"1", "2"}; !reflect.DeepEqual(pagesRequested(t, f.listRequests), want) {
-		t.Errorf("pages requested = %v, want %v and no probe past the end", pagesRequested(t, f.listRequests), want)
+	if want := []string{"1", "2"}; !reflect.DeepEqual(pagesRequested(f.listRequests), want) {
+		t.Errorf("pages requested = %v, want %v and no probe past the end", pagesRequested(f.listRequests), want)
 	}
 }
 

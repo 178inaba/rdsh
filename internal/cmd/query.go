@@ -309,9 +309,11 @@ func runQueryList(cmd *cobra.Command, args []string, g *globalFlags, mine bool, 
 	if timeout < 0 {
 		return fmt.Errorf("--timeout must not be negative (got %s)", timeout)
 	}
-	// Checked here as well as in the client so the message names the flag
-	// the caller actually passed, and so nothing is sent: the server would
-	// refuse the resulting page_size anyway.
+	// The client documents this as a precondition rather than enforcing it,
+	// the way every other method there leaves argument checking to this
+	// layer. Checking it here names the flag the caller actually passed,
+	// and nothing is sent: the server would refuse the page size a smaller
+	// limit asks for anyway.
 	if limit < 1 {
 		return fmt.Errorf("--limit must be at least 1 (got %d)", limit)
 	}

@@ -108,8 +108,10 @@ func cellString(v any) string {
 	case bool:
 		return strconv.FormatBool(t)
 	default:
-		// Nested arrays/objects and anything unexpected: JSON is the least
-		// ambiguous single-cell representation.
+		// Native scalars from a row a command assembled itself (the saved
+		// query listing's IDs), nested arrays/objects, and anything
+		// unexpected: JSON is the least ambiguous single-cell
+		// representation, and renders an int exactly as strconv would.
 		b, err := json.Marshal(t)
 		if err != nil {
 			return fmt.Sprint(t)
