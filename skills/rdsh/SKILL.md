@@ -35,7 +35,7 @@ To hand someone a Redash URL, run the SQL with `rdsh run` first, then save it wi
 
 New queries are published, so they appear in colleagues' query lists — that is what sharing needs. Pass `--draft` for queries that exist only to be referenced (Query Results parts), so they stay out of everyone else's list; a draft is still reachable by URL and still usable as `query_<id>`.
 
-To change a saved query afterwards — fix the SQL, rename it, flip it between published and draft — use `rdsh query update` on its ID or URL rather than saving a second query; the URL already handed out keeps working. It refuses an invocation with nothing to change, and it is the one command that never reads stdin, so pipe nothing into it. If it reports that the query changed on the server, someone edited it in the Redash UI in the meantime: read the query again and compose the update from what is there now — re-running the same command unchanged will keep failing.
+To change a saved query afterwards — fix the SQL, rename it, flip it between published and draft — use `rdsh query update` on its ID or URL rather than saving a second query; the URL already handed out keeps working. It refuses an invocation with nothing to change, and — unlike `rdsh run` and `rdsh query create` — it never reads stdin, so pipe nothing into it. If it reports that the query changed on the server, someone edited it in the Redash UI in the meantime: read the query again and compose the update from what is there now — re-running the same command unchanged will keep failing.
 
 ## Timeouts and exit codes
 

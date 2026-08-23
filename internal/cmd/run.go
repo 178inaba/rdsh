@@ -23,6 +23,17 @@ var errTimeout = errors.New("query timed out")
 
 const defaultTimeout = 90 * time.Second
 
+// timeoutOr reports err as the timeout it is when the deadline is what
+// stopped it, so the run exits 124 rather than 1. Opting in per call site
+// rather than wrapping on the way out is what leaves query create's publish
+// step free to report its expiry as an ordinary failure.
+func timeoutOr(err error, timeout time.Duration) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w after %s (use --timeout to allow more time): %v", errTimeout, timeout, err)
+	}
+	return err
+}
+
 func newRunCmd(g *globalFlags) *cobra.Command {
 	var (
 		file         string

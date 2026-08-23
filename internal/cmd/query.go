@@ -175,11 +175,10 @@ func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 		return fmt.Errorf("--timeout must not be negative (got %s)", timeout)
 	}
 
-	// The SQL argument is recognised by being there at all, not by being
-	// non-empty as it is in create: SQL is optional here, so an empty one
-	// has to stay distinguishable from none at all rather than silently
-	// falling through to --file. Nothing falls back to stdin either — see
-	// the command's help for why.
+	// The SQL argument counts as given by being there at all rather than by
+	// being non-empty as it is in create, so that `update <id> "" -f file`
+	// is the conflict it looks like instead of quietly using the file.
+	// Nothing falls back to stdin either — see the command's help for why.
 	arg, hasArg := "", len(args) == 2
 	if hasArg {
 		arg = args[1]
@@ -187,6 +186,17 @@ func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 	sql, hasSQL, err := sqlFromArgOrFile(arg, hasArg, file)
 	if err != nil {
 		return err
+	}
+	// An empty value is refused rather than sent, for both of the fields
+	// where it would destroy something: a saved query with no SQL or no
+	// name is of no use to anyone, and an unset shell variable is all it
+	// takes to ask for one by accident. --description is the exception —
+	// clearing it is a real edit, which is why it goes through as given.
+	if hasSQL && sql == "" {
+		return errors.New("the new SQL is empty; pass the SQL to save, or leave it out to keep the query's own")
+	}
+	if cmd.Flags().Changed("name") && name == "" {
+		return errors.New("--name must not be empty")
 	}
 
 	// Which fields to send comes from whether the flag was given rather
@@ -281,15 +291,4 @@ func resolveQueryID(arg string, client *redash.Client) (int, error) {
 		return 0, fmt.Errorf("%q carries no query ID after %s", arg, prefix)
 	}
 	return strconv.Atoi(rest)
-}
-
-// timeoutOr reports err as the timeout it is when the deadline is what
-// stopped it, so the run exits 124 rather than 1. Opting in per call site
-// rather than wrapping on the way out is what leaves create's publish step
-// free to report its expiry as an ordinary failure.
-func timeoutOr(err error, timeout time.Duration) error {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("%w after %s (use --timeout to allow more time): %v", errTimeout, timeout, err)
-	}
-	return err
 }

@@ -420,6 +420,40 @@ func TestQueryUpdateSQLChannels(t *testing.T) {
 	})
 }
 
+// TestQueryUpdateRejectsEmptyValues covers the two fields where sending an
+// empty value would destroy something rather than edit it. An unset shell
+// variable is all it takes to ask for that by accident, so both are refused
+// before anything reaches the server. --description is deliberately not
+// among them: clearing it is a real edit, covered by TestQueryUpdateFields.
+func TestQueryUpdateRejectsEmptyValues(t *testing.T) {
+	empty := filepath.Join(t.TempDir(), "empty.sql")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "empty name", args: []string{"--name", ""}, wantErr: "--name"},
+		{name: "empty sql argument", args: []string{""}, wantErr: "empty"},
+		{name: "empty sql file", args: []string{"-f", empty}, wantErr: "empty"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeServer{}
+			srv := f.start(t)
+
+			_, err := runRdsh(t, srv, "", append([]string{"query", "update", "7"}, tt.args...)...)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want one mentioning %s", err, tt.wantErr)
+			}
+			assertNothingSent(t, f)
+		})
+	}
+}
+
 // TestQueryUpdatePublishAndDraftConflict covers the two flags that set the
 // same field in opposite directions.
 func TestQueryUpdatePublishAndDraftConflict(t *testing.T) {
