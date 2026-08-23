@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http/httptest"
@@ -527,5 +528,279 @@ func assertNothingSent(t *testing.T, f *fakeServer) {
 	}
 	if f.updated != nil {
 		t.Errorf("update body = %v, want no request at all", f.updated)
+	}
+}
+
+// wantListHeader is the column order the listing prints. It is part of the
+// agent-facing contract, so the tests pin the header rather than only the
+// set of columns.
+const wantListHeader = "id,name,is_draft,url"
+
+// listRows splits a CSV listing into its header and data rows.
+func listRows(t *testing.T, out string) (string, []string) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(lines) == 0 {
+		t.Fatalf("output = %q, want at least a header", out)
+	}
+	return lines[0], lines[1:]
+}
+
+// assertNoNote checks stderr for a listing that showed everything: nothing
+// must suggest there is more to see.
+func assertNoNote(t *testing.T, errOut string) {
+	t.Helper()
+	if errOut != "" {
+		t.Errorf("stderr = %q, want nothing when the listing was not truncated", errOut)
+	}
+}
+
+// TestQueryList covers the default listing: the fixed column order, the
+// default cap of 30 rows, and the URL column built from the ID.
+func TestQueryList(t *testing.T) {
+	f := &fakeServer{savedQueries: 3}
+	srv := f.start(t)
+
+	out, errOut, err := runRdshSplit(t, srv, "query", "list")
+	if err != nil {
+		t.Fatalf("query list error = %v", err)
+	}
+	assertNoNote(t, errOut)
+
+	header, rows := listRows(t, out)
+	if header != wantListHeader {
+		t.Errorf("header = %q, want %q", header, wantListHeader)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("rows = %v, want 3", rows)
+	}
+	if want := fmt.Sprintf("1,query 1,true,%s/queries/1", srv.URL); rows[0] != want {
+		t.Errorf("rows[0] = %q, want %q", rows[0], want)
+	}
+	if want := fmt.Sprintf("2,query 2,false,%s/queries/2", srv.URL); rows[1] != want {
+		t.Errorf("rows[1] = %q, want %q", rows[1], want)
+	}
+}
+
+// TestQueryListDefaultLimit pins the gh-style default of 30 rows, and that
+// exceeding it is not an error.
+func TestQueryListDefaultLimit(t *testing.T) {
+	f := &fakeServer{savedQueries: 45}
+	srv := f.start(t)
+
+	out, _, err := runRdshSplit(t, srv, "query", "list")
+	if err != nil {
+		t.Fatalf("query list error = %v", err)
+	}
+	if _, rows := listRows(t, out); len(rows) != 30 {
+		t.Errorf("rows = %d, want the default limit of 30", len(rows))
+	}
+}
+
+// TestQueryListLimit covers raising and lowering the cap, including a limit
+// above what the server holds.
+func TestQueryListLimit(t *testing.T) {
+	tests := []struct {
+		name     string
+		limit    string
+		wantRows int
+	}{
+		{name: "below the default", limit: "2", wantRows: 2},
+		{name: "above the default", limit: "40", wantRows: 40},
+		{name: "above what the server holds", limit: "500", wantRows: 45},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeServer{savedQueries: 45}
+			srv := f.start(t)
+
+			out, _, err := runRdshSplit(t, srv, "query", "list", "--limit", tt.limit)
+			if err != nil {
+				t.Fatalf("query list error = %v", err)
+			}
+			if _, rows := listRows(t, out); len(rows) != tt.wantRows {
+				t.Errorf("rows = %d, want %d", len(rows), tt.wantRows)
+			}
+		})
+	}
+}
+
+// TestQueryListTarget covers what the positional argument and --mine change
+// about the request: the search term becomes the API's q, and --mine picks
+// the endpoint that serves only the caller's own queries.
+func TestQueryListTarget(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantPath   string
+		wantSearch string
+	}{
+		{name: "no filter", wantPath: "/api/queries"},
+		{name: "search", args: []string{"signups"}, wantPath: "/api/queries", wantSearch: "signups"},
+		{name: "mine", args: []string{"--mine"}, wantPath: "/api/queries/my"},
+		{
+			name:       "mine with a search",
+			args:       []string{"signups", "--mine"},
+			wantPath:   "/api/queries/my",
+			wantSearch: "signups",
+		},
+		// An unset shell variable expands to an empty argument; listing
+		// everything is the same answer the server gives for an empty q, and
+		// unlike update's empty --name nothing is destroyed by it.
+		{name: "empty search", args: []string{""}, wantPath: "/api/queries"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeServer{savedQueries: 2}
+			srv := f.start(t)
+
+			if _, err := runRdsh(t, srv, "", append([]string{"query", "list"}, tt.args...)...); err != nil {
+				t.Fatalf("query list error = %v", err)
+			}
+
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if len(f.listed) != 1 {
+				t.Fatalf("listing requests = %d, want 1", len(f.listed))
+			}
+			if got := f.listed[0].Path; got != tt.wantPath {
+				t.Errorf("path = %q, want %q", got, tt.wantPath)
+			}
+			if got := f.listed[0].Query().Get("q"); got != tt.wantSearch {
+				t.Errorf("q = %q, want %q", got, tt.wantSearch)
+			}
+		})
+	}
+}
+
+// TestQueryListJSON covers the machine-readable format: an array of row
+// objects carrying the same four fields, with the ID a number and the draft
+// flag a boolean rather than the strings the CSV rendering produces.
+func TestQueryListJSON(t *testing.T) {
+	f := &fakeServer{savedQueries: 2}
+	srv := f.start(t)
+
+	out, _, err := runRdshSplit(t, srv, "query", "list", "--format", "json")
+	if err != nil {
+		t.Fatalf("query list error = %v", err)
+	}
+
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("len(rows) = %d, want 2", len(rows))
+	}
+	want := map[string]any{
+		"id": float64(1), "name": "query 1", "is_draft": true,
+		"url": srv.URL + "/queries/1",
+	}
+	if !reflect.DeepEqual(rows[0], want) {
+		t.Errorf("rows[0] = %v, want %v", rows[0], want)
+	}
+}
+
+// TestQueryListNoMatches covers the empty listing, which is a successful
+// answer rather than a failure: the header alone in CSV, an empty array in
+// JSON.
+func TestQueryListNoMatches(t *testing.T) {
+	tests := []struct {
+		format string
+		want   string
+	}{
+		{format: "csv", want: wantListHeader + "\n"},
+		{format: "json", want: "[]\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.format, func(t *testing.T) {
+			f := &fakeServer{}
+			srv := f.start(t)
+
+			out, errOut, err := runRdshSplit(t, srv, "query", "list", "nothing matches", "--format", tt.format)
+			if err != nil {
+				t.Fatalf("query list error = %v", err)
+			}
+			assertNoNote(t, errOut)
+			if out != tt.want {
+				t.Errorf("output = %q, want %q", out, tt.want)
+			}
+		})
+	}
+}
+
+// TestQueryListTruncationNote covers the note a truncated listing carries.
+// It has to be a note rather than a failure — the rows are still what was
+// asked for — so the command succeeds, and it goes to stderr so stdout
+// stays parseable as the listing alone. That it reaches the process's own
+// stderr, and that the run still exits 0, is pinned end to end in
+// execute_test.go.
+func TestQueryListTruncationNote(t *testing.T) {
+	f := &fakeServer{savedQueries: 45}
+	srv := f.start(t)
+
+	out, errOut, err := runRdshSplit(t, srv, "query", "list", "--limit", "10")
+	if err != nil {
+		t.Fatalf("query list error = %v", err)
+	}
+	if _, rows := listRows(t, out); len(rows) != 10 {
+		t.Errorf("stdout rows = %d, want the 10 asked for and no note among them", len(rows))
+	}
+	// Both counts, so the note says how much was left rather than only that
+	// something was.
+	for _, want := range []string{"10", "45"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("stderr = %q, want the note to carry %s", errOut, want)
+		}
+	}
+}
+
+// TestQueryListNoTruncationNote is the other half: a listing that showed
+// everything must not suggest there is more to see.
+func TestQueryListNoTruncationNote(t *testing.T) {
+	f := &fakeServer{savedQueries: 3}
+	srv := f.start(t)
+
+	out, errOut, err := runRdshSplit(t, srv, "query", "list", "--limit", "3")
+	if err != nil {
+		t.Fatalf("query list error = %v", err)
+	}
+	assertNoNote(t, errOut)
+	if _, rows := listRows(t, out); len(rows) != 3 {
+		t.Errorf("output = %q, want the three rows and nothing else", out)
+	}
+}
+
+// TestQueryListRejectsBadLimit covers the limits the server would refuse
+// as a page_size: they are caught before anything is sent.
+func TestQueryListRejectsBadLimit(t *testing.T) {
+	for _, limit := range []string{"0", "-1"} {
+		t.Run(limit, func(t *testing.T) {
+			f := &fakeServer{savedQueries: 3}
+			srv := f.start(t)
+
+			_, err := runRdsh(t, srv, "", "query", "list", "--limit", limit)
+			if err == nil || !strings.Contains(err.Error(), "--limit") {
+				t.Fatalf("error = %v, want one naming --limit", err)
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if f.listed != nil {
+				t.Errorf("listing requests = %v, want the invocation refused before any request", f.listed)
+			}
+		})
+	}
+}
+
+// TestQueryListTimeoutIsATimeout pins the exit code contract: a listing is
+// a read, so a deadline that cuts it off leaves nothing behind and
+// re-running is safe — which is what 124 tells an agent to do.
+func TestQueryListTimeoutIsATimeout(t *testing.T) {
+	f := &fakeServer{hangListQueries: true}
+	srv := f.start(t)
+
+	_, err := runRdsh(t, srv, "", "query", "list", "--timeout", "50ms")
+	if !errors.Is(err, errTimeout) {
+		t.Fatalf("error = %v, want errTimeout", err)
 	}
 }

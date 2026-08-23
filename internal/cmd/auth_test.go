@@ -21,17 +21,25 @@ import (
 // inspect the config file. srv == nil leaves the env pair unset.
 func runRdshIn(t *testing.T, configDir string, srv *httptest.Server, stdin string, args ...string) (string, error) {
 	t.Helper()
+	setRdshEnv(t, configDir, srv)
+	return runRdshWithEnvSet(t, stdin, args...)
+}
+
+// setRdshEnv points rdsh at srv with a config directory of its own, or at
+// no server at all when srv is nil. Every helper that runs a command in
+// process goes through here, so what a test run inherits is described once.
+func setRdshEnv(t *testing.T, configDir string, srv *httptest.Server) {
+	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 	if srv != nil {
 		t.Setenv("RDSH_URL", srv.URL)
 		t.Setenv("RDSH_API_KEY", "test-key")
-	} else {
-		t.Setenv("RDSH_URL", "")
-		t.Setenv("RDSH_API_KEY", "")
-		os.Unsetenv("RDSH_URL")
-		os.Unsetenv("RDSH_API_KEY")
+		return
 	}
-	return runRdshWithEnvSet(t, stdin, args...)
+	t.Setenv("RDSH_URL", "")
+	t.Setenv("RDSH_API_KEY", "")
+	os.Unsetenv("RDSH_URL")
+	os.Unsetenv("RDSH_API_KEY")
 }
 
 func TestAuthLoginSavesVerifiedProfile(t *testing.T) {

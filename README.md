@@ -53,6 +53,16 @@ rdsh query update 42 -f signups.sql
 rdsh query update https://redash.example.com/queries/42 --name "Weekly signups (EU)" --publish
 ```
 
+To find a saved query in the first place — its ID, or whether it is still a draft — list them. Without an argument the queries you can see come back newest first; with one, it is a full-text search the server answers in its own relevance order:
+
+```sh
+rdsh query list
+rdsh query list signups --format tsv
+rdsh query list --mine --limit 100
+```
+
+The columns are `id`, `name`, `is_draft`, and `url`. Only the first 30 rows are printed unless `--limit` says otherwise; when the server holds more, a note saying so goes to stderr and the command still exits 0, so stdout stays parseable as the listing alone.
+
 Unlike `rdsh run` and `rdsh query create`, `rdsh query update` never reads stdin — SQL is optional there, so falling back to it would turn whatever was piped in into the query. The update also carries the version the query had when it was read, so an edit made in the Redash UI in the meantime fails the command instead of being overwritten; read the query again and re-run.
 
 ### Profiles
@@ -71,7 +81,7 @@ RDSH_URL=https://redash.example.com RDSH_API_KEY=... rdsh run "SELECT 1" --data-
 
 ### Timeouts
 
-`rdsh run`, `rdsh query create`, and `rdsh query update` all take `--timeout`, defaulting to 90s; exceeding it exits with code 124. For `rdsh run` that also cancels the server-side job.
+`rdsh run`, `rdsh query create`, `rdsh query update`, and `rdsh query list` all take `--timeout`, defaulting to 90s; exceeding it exits with code 124. For `rdsh run` that also cancels the server-side job.
 
 ```sh
 rdsh run -f heavy.sql --timeout 30m
