@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -30,7 +31,7 @@ func newQueryCmd(g *globalFlags) *cobra.Command {
 			return cmd.Help()
 		},
 	}
-	cmd.AddCommand(newQueryCreateCmd(g), newQueryUpdateCmd(g), newQueryListCmd(g))
+	cmd.AddCommand(newQueryCreateCmd(g), newQueryUpdateCmd(g), newQueryListCmd(g), newQueryShowCmd(g))
 	return cmd
 }
 
@@ -382,6 +383,135 @@ func queryListResult(client *redash.Client, queries []redash.Query) *redash.Quer
 		}
 	}
 	return result
+}
+
+// showFormat is the --format value `rdsh query show` accepts. The shared
+// format.Format is deliberately not reused: its zero value is csv, and the
+// row formats it offers cannot carry a multi-line SQL body. This one has no
+// name for the default output, so leaving --format out is what asks for the
+// SQL itself.
+//
+// pflag.Value, like format.Format, so an unsupported value is refused while
+// cobra parses the flags rather than after the query has been read.
+type showFormat string
+
+// showFormatJSON is the only value --format takes on show.
+const showFormatJSON showFormat = "json"
+
+func (f showFormat) String() string { return string(f) }
+
+func (f *showFormat) Set(s string) error {
+	if showFormat(s) != showFormatJSON {
+		return fmt.Errorf("unsupported format %q (the only one is %s; without --format the SQL itself is printed)",
+			s, showFormatJSON)
+	}
+	*f = showFormatJSON
+	return nil
+}
+
+// Type names the value shown in the --format help line, for the same reason
+// format.Format reports "string": the help text is part of the agent-facing
+// contract.
+func (showFormat) Type() string { return "string" }
+
+func newQueryShowCmd(g *globalFlags) *cobra.Command {
+	var (
+		outputFormat showFormat
+		timeout      time.Duration
+	)
+	cmd := &cobra.Command{
+		Use:   "show <id|url>",
+		Short: "Print a saved Redash query's SQL",
+		Long: `Print a saved Redash query's SQL.
+
+The query is named by its ID or by its URL on the configured Redash
+instance. What is printed is the query's own SQL and nothing else, so
+
+    rdsh query show <id|url> > q.sql
+    rdsh run -f q.sql
+
+is how a query someone shared is run for a fresh result of its own.
+
+--format json prints one object carrying the query's metadata alongside the
+SQL: id, name, description, data_source_id, is_draft, url and query. json is
+the only value it takes — a multi-line SQL body does not fit a row format.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runQueryShow(cmd, args, g, outputFormat, timeout)
+		},
+	}
+	cmd.Flags().Var(&outputFormat, "format", "output format: json (default: the SQL itself)")
+	cmd.Flags().DurationVar(&timeout, "timeout", defaultTimeout, "give up on the server after this duration (0 = no limit)")
+	return cmd
+}
+
+func runQueryShow(cmd *cobra.Command, args []string, g *globalFlags, outputFormat showFormat,
+	timeout time.Duration) error {
+	// The only check left before the request: --format was validated as the
+	// flags were parsed.
+	if timeout < 0 {
+		return fmt.Errorf("--timeout must not be negative (got %s)", timeout)
+	}
+
+	conn, err := resolveConnection(g.profile)
+	if err != nil {
+		return err
+	}
+	client := redash.NewClient(conn.URL, conn.APIKey)
+	id, err := resolveQueryID(args[0], client)
+	if err != nil {
+		return err
+	}
+
+	ctx := cmd.Context()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	// A read leaves the server as it was, so a deadline that cuts it off is
+	// an ordinary timeout: re-running the command as it stands is safe,
+	// which is what exit code 124 tells an agent to do.
+	q, err := client.GetQuery(ctx, id)
+	if err != nil {
+		return timeoutOr(err, timeout)
+	}
+
+	out := cmd.OutOrStdout()
+	if outputFormat == showFormatJSON {
+		return writeQueryDetail(out, q, client.QueryURL(q.ID))
+	}
+	// Exactly one trailing newline whether or not the stored SQL carries
+	// any, so that the redirected output is the same file either way.
+	fmt.Fprintln(out, strings.TrimRight(q.Query, "\n"))
+	return nil
+}
+
+// writeQueryDetail prints the saved query as one JSON object. The shape is
+// this command's own — format.Write renders the row sets run and the listing
+// share — but the encoding goes through internal/format like every other
+// JSON stream rdsh prints. The SQL is printed as it is stored; normalising
+// the trailing newline is a property of the raw stream above, not of the
+// query.
+func writeQueryDetail(w io.Writer, q *redash.Query, url string) error {
+	return format.WriteObject(w, struct {
+		ID           int    `json:"id"`
+		Name         string `json:"name"`
+		Description  string `json:"description"`
+		DataSourceID int    `json:"data_source_id"`
+		IsDraft      bool   `json:"is_draft"`
+		URL          string `json:"url"`
+		Query        string `json:"query"`
+	}{
+		ID:           q.ID,
+		Name:         q.Name,
+		Description:  q.Description,
+		DataSourceID: q.DataSourceID,
+		IsDraft:      q.IsDraft,
+		URL:          url,
+		Query:        q.Query,
+	})
 }
 
 // resolveQueryID reads the <id|url> argument the saved-query commands take:

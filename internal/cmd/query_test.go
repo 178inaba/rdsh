@@ -226,8 +226,8 @@ func TestQueryGroupArguments(t *testing.T) {
 	}
 }
 
-// TestResolveQueryID covers the argument both update and a future show take:
-// an ID, or the URL a browser copied from the address bar. The prefix has to
+// TestResolveQueryID covers the argument both update and show take: an ID,
+// or the URL a browser copied from the address bar. The prefix has to
 // match through /queries/ rather than the base URL alone, or a lookalike
 // host would send an update to another instance.
 func TestResolveQueryID(t *testing.T) {
@@ -800,6 +800,177 @@ func TestQueryListTimeoutIsATimeout(t *testing.T) {
 	srv := f.start(t)
 
 	_, err := runRdsh(t, srv, "", "query", "list", "--timeout", "50ms")
+	if !errors.Is(err, errTimeout) {
+		t.Fatalf("error = %v, want errTimeout", err)
+	}
+}
+
+// TestQueryShowPrintsTheSQL covers the default output, which is the whole
+// point of the command: the stored SQL and nothing else, so that
+// `rdsh query show <id> > q.sql` produces a file `rdsh run -f` can take.
+// The trailing newline is normalised to exactly one either way, since a
+// query stored with one and a query stored without must give the same file.
+func TestQueryShowPrintsTheSQL(t *testing.T) {
+	const sql = "SELECT id\nFROM users\nWHERE created_at > now() - interval '7 days'"
+	tests := []struct {
+		name  string
+		saved string
+	}{
+		{name: "stored without a trailing newline", saved: sql},
+		{name: "stored with one", saved: sql + "\n"},
+		{name: "stored with several", saved: sql + "\n\n\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeServer{savedQuerySQL: tt.saved}
+			srv := f.start(t)
+
+			out, errOut, err := runRdshSplit(t, srv, "query", "show", "7")
+			if err != nil {
+				t.Fatalf("query show error = %v", err)
+			}
+			if want := sql + "\n"; out != want {
+				t.Errorf("output = %q, want %q and nothing else", out, want)
+			}
+			if errOut != "" {
+				t.Errorf("stderr = %q, want nothing alongside the SQL", errOut)
+			}
+		})
+	}
+}
+
+// TestQueryShowTarget covers the forms the argument takes end to end: the
+// ID, the URL, and the URL a browser copies from the query's source view.
+// The parsing itself is covered by TestResolveQueryID; what this pins is
+// that show reaches the same query through all three.
+func TestQueryShowTarget(t *testing.T) {
+	tests := []struct {
+		name   string
+		target string // %s stands in for the query's URL on the fake
+	}{
+		{name: "id", target: "7"},
+		{name: "url", target: "%s"},
+		{name: "url copied from the source view", target: "%s/source"},
+		{name: "url with a query string and fragment", target: "%s?p_x=1#fragment"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeServer{}
+			srv := f.start(t)
+
+			target := strings.Replace(tt.target, "%s", savedQueryURL(srv), 1)
+			out, err := runRdsh(t, srv, "", "query", "show", target)
+			if err != nil {
+				t.Fatalf("query show error = %v", err)
+			}
+			if want := defaultSavedQuerySQL + "\n"; out != want {
+				t.Errorf("output = %q, want %q", out, want)
+			}
+		})
+	}
+}
+
+// TestQueryShowAnotherInstance covers the URL-argument rule from the other
+// side: a URL on some other Redash is refused before the API key is sent
+// anywhere, and it is an ordinary failure rather than a timeout.
+func TestQueryShowAnotherInstance(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	_, err := runRdsh(t, srv, "", "query", "show", "https://redash.other.test/queries/7")
+	if err == nil {
+		t.Fatal("error = nil, want a URL on another instance refused")
+	}
+	if errors.Is(err, errTimeout) {
+		t.Errorf("error = %v, want an ordinary failure", err)
+	}
+	assertNothingSent(t, f)
+}
+
+// TestQueryShowJSON covers the machine-readable form: one object rather
+// than the array of rows the other commands print, carrying the metadata
+// the SQL alone cannot. The SQL keeps the > that the encoder escapes,
+// which is what the rest of the package's JSON output does too.
+//
+// It is also the SQL exactly as stored, trailing newline and all: the
+// normalisation the default output does exists so that a redirect produces
+// the same file either way, and applying it here would hand back something
+// other than what Redash holds.
+func TestQueryShowJSON(t *testing.T) {
+	const sql = "SELECT 1 WHERE 2 > 1\n"
+	f := &fakeServer{savedQuerySQL: sql}
+	srv := f.start(t)
+
+	out, err := runRdsh(t, srv, "", "query", "show", "7", "--format", "json")
+	if err != nil {
+		t.Fatalf("query show error = %v", err)
+	}
+	if strings.Contains(out, ">") {
+		t.Errorf("output = %q, want the > escaped as the other JSON output escapes it", out)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
+	}
+	want := map[string]any{
+		"id": float64(savedQueryID), "name": "saved", "description": "what it is for",
+		"data_source_id": float64(5), "is_draft": true, "url": savedQueryURL(srv), "query": sql,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("output = %v, want %v", got, want)
+	}
+}
+
+// TestQueryShowRejectsRowFormats covers the one place show's --format
+// differs from every other command's: a multi-line SQL body does not fit a
+// row format, so json is the only value, and anything else fails while
+// cobra parses the flags — before the query is even read.
+func TestQueryShowRejectsRowFormats(t *testing.T) {
+	for _, f := range []string{"csv", "tsv", "jso"} {
+		t.Run(f, func(t *testing.T) {
+			srvFake := &fakeServer{}
+			srv := srvFake.start(t)
+
+			_, err := runRdsh(t, srv, "", "query", "show", "7", "--format", f)
+			if err == nil {
+				t.Fatalf("error = nil, want --format %s refused", f)
+			}
+			if !strings.Contains(err.Error(), "json") {
+				t.Errorf("error = %v, want it to name json as the only value", err)
+			}
+			assertNothingSent(t, srvFake)
+		})
+	}
+}
+
+// TestQueryShowMissingQuery covers a query that is not there: the API's own
+// failure surfaces, and it is an ordinary failure rather than a timeout, so
+// re-running with a longer --timeout is not suggested.
+func TestQueryShowMissingQuery(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	_, err := runRdsh(t, srv, "", "query", "show", "999")
+	if err == nil {
+		t.Fatal("error = nil, want the API failure reported")
+	}
+	if errors.Is(err, errTimeout) {
+		t.Errorf("error = %v, want an ordinary failure", err)
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("error = %v, want it to carry the server's status", err)
+	}
+}
+
+// TestQueryShowTimeoutIsATimeout pins the exit code contract: a show is a
+// read, so a deadline that cuts it off leaves the query as it was and
+// re-running is safe — which is what 124 tells an agent to do.
+func TestQueryShowTimeoutIsATimeout(t *testing.T) {
+	f := &fakeServer{hangGet: true}
+	srv := f.start(t)
+
+	_, err := runRdsh(t, srv, "", "query", "show", "7", "--timeout", "50ms")
 	if !errors.Is(err, errTimeout) {
 		t.Fatalf("error = %v, want errTimeout", err)
 	}

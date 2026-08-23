@@ -43,6 +43,17 @@ Drafts are visible in this listing only to the user who saved them, so a query s
 
 To change a saved query afterwards — fix the SQL, rename it, flip it between published and draft — use `rdsh query update` on its ID or URL rather than saving a second query; the URL already handed out keeps working. It refuses an invocation with nothing to change, and — unlike `rdsh run` and `rdsh query create` — it never reads stdin, so pipe nothing into it. If it reports that the query changed on the server, someone edited it in the Redash UI in the meantime: read the query again and compose the update from what is there now — re-running the same command unchanged will keep failing.
 
+## Reading a query someone shared
+
+When a colleague hands over a Redash query URL, `rdsh query show` reads its SQL without the UI. The default output is the SQL alone, so redirecting it produces a file `rdsh run -f` takes:
+
+```sh
+rdsh query show <url> > q.sql
+rdsh run -f q.sql
+```
+
+That is how a shared query is answered with current data — the saved query's own stored result is never fetched, so what comes back is always fresh. Use `--format json` instead when the metadata is what is needed (name, description, data source, draft state, URL, and the SQL in one object).
+
 ## Timeouts and exit codes
 
 - `rdsh run` and the `rdsh query` subcommands take `--timeout`, defaulting to 90 s, which suits synchronous runs. Exit code 124 means the deadline expired (on `rdsh run`, the server-side job is cancelled best-effort): re-run with a longer `--timeout` (e.g. `10m`) in a background shell. `--timeout 0` (unlimited) is for background runs only.
@@ -58,4 +69,4 @@ To change a saved query afterwards — fix the SQL, rename it, flip it between p
 
 ## Output
 
-`--format json` (an array of row objects) for machine processing; `csv` or `tsv` when column order matters (JSON rows carry no column order) — prefer `tsv` when cell values may contain commas. `rdsh query list` shares the same flag and defaults, so query names containing commas are a reason to pick `tsv` there too.
+`--format json` (an array of row objects) for machine processing; `csv` or `tsv` when column order matters (JSON rows carry no column order) — prefer `tsv` when cell values may contain commas. `rdsh query list` shares the same flag and defaults, so query names containing commas are a reason to pick `tsv` there too. `rdsh query show` is the exception: it prints the query's SQL with no `--format` at all, and `json` is the only value that flag accepts there — do not pass `csv` or `tsv` to it.
