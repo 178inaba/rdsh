@@ -32,6 +32,8 @@ type fakeRedash struct {
 	submittedBody map[string]any
 	createdQuery  map[string]any // body of POST /api/queries
 	updatedQuery  map[string]any // body of POST /api/queries/7
+	queryVersion  int            // version served by GET /api/queries/7
+	updateStatus  int            // HTTP status for POST /api/queries/7, default 200
 	gotAuth       []string
 }
 
@@ -105,11 +107,24 @@ func (f *fakeRedash) server() *httptest.Server {
 			"data_source_id": f.createdQuery["data_source_id"], "is_draft": true,
 		})
 	})
+	mux.HandleFunc("GET /api/queries/7", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		writeJSON(w, map[string]any{
+			"id": 7, "name": "saved", "query": "SELECT 1", "data_source_id": 3,
+			"is_draft": true, "version": f.queryVersion,
+		})
+	})
 	mux.HandleFunc("POST /api/queries/7", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		if err := json.NewDecoder(r.Body).Decode(&f.updatedQuery); err != nil {
 			f.t.Errorf("decode updated query: %v", err)
+		}
+		if f.updateStatus != 0 && f.updateStatus != http.StatusOK {
+			w.WriteHeader(f.updateStatus)
+			writeJSON(w, map[string]any{"message": "Query version conflict"})
+			return
 		}
 		writeJSON(w, map[string]any{"id": 7, "name": "saved", "is_draft": false})
 	})
@@ -333,6 +348,77 @@ func TestUpdateQuery(t *testing.T) {
 	}
 	if want := map[string]any{"is_draft": false}; !reflect.DeepEqual(f.updatedQuery, want) {
 		t.Errorf("updated query body = %v, want %v", f.updatedQuery, want)
+	}
+}
+
+// TestGetQuery covers the read an update needs: the version, which is what
+// makes the following write fail rather than overwrite a query someone else
+// edited in between.
+func TestGetQuery(t *testing.T) {
+	f := &fakeRedash{t: t, queryVersion: 4}
+	srv := f.server()
+	defer srv.Close()
+
+	q, err := newTestClient(srv, "k").GetQuery(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetQuery() error = %v", err)
+	}
+	if q.ID != 7 || q.Version != 4 || q.Query != "SELECT 1" || !q.IsDraft {
+		t.Errorf("GetQuery() = %+v, want ID 7, version 4, the saved SQL and is_draft true", q)
+	}
+}
+
+// TestUpdateQuerySendsVersion pins the conflict handling's request half: the
+// version read beforehand travels with the update, which is what lets the
+// server reject a write based on a stale read.
+func TestUpdateQuerySendsVersion(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	name, version := "renamed", 4
+	if _, err := newTestClient(srv, "k").UpdateQuery(context.Background(), 7, redash.QueryUpdate{
+		Name: &name, Version: &version,
+	}); err != nil {
+		t.Fatalf("UpdateQuery() error = %v", err)
+	}
+	want := map[string]any{"name": "renamed", "version": float64(4)}
+	if !reflect.DeepEqual(f.updatedQuery, want) {
+		t.Errorf("updated query body = %v, want %v", f.updatedQuery, want)
+	}
+}
+
+// TestUpdateQueryVersionConflict pins the response half: the 409 a stale
+// version earns is recognisable, so a caller can say what to do about it
+// rather than pass an HTTP status on.
+func TestUpdateQueryVersionConflict(t *testing.T) {
+	f := &fakeRedash{t: t, updateStatus: http.StatusConflict}
+	srv := f.server()
+	defer srv.Close()
+
+	version := 4
+	_, err := newTestClient(srv, "k").UpdateQuery(context.Background(), 7, redash.QueryUpdate{Version: &version})
+	if !errors.Is(err, redash.ErrQueryVersionConflict) {
+		t.Fatalf("UpdateQuery() error = %v, want ErrQueryVersionConflict", err)
+	}
+}
+
+// TestUpdateQueryConflictWithoutVersionIsNotAConflict keeps the sentinel
+// tied to what it means. An update that sent no version cannot have lost a
+// version check, so a 409 there is some other refusal and must not be
+// reported as a query that changed underneath the caller.
+func TestUpdateQueryConflictWithoutVersionIsNotAConflict(t *testing.T) {
+	f := &fakeRedash{t: t, updateStatus: http.StatusConflict}
+	srv := f.server()
+	defer srv.Close()
+
+	draft := false
+	_, err := newTestClient(srv, "k").UpdateQuery(context.Background(), 7, redash.QueryUpdate{IsDraft: &draft})
+	if err == nil {
+		t.Fatal("UpdateQuery() error = nil, want the refusal reported")
+	}
+	if errors.Is(err, redash.ErrQueryVersionConflict) {
+		t.Errorf("UpdateQuery() error = %v, want an ordinary failure rather than a version conflict", err)
 	}
 }
 
