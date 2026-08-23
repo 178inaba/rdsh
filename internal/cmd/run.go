@@ -23,6 +23,17 @@ var errTimeout = errors.New("query timed out")
 
 const defaultTimeout = 90 * time.Second
 
+// timeoutOr reports err as the timeout it is when the deadline is what
+// stopped it, so the run exits 124 rather than 1. Opting in per call site
+// rather than wrapping on the way out is what leaves query create's publish
+// step free to report its expiry as an ordinary failure.
+func timeoutOr(err error, timeout time.Duration) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w after %s (use --timeout to allow more time): %v", errTimeout, timeout, err)
+	}
+	return err
+}
+
 func newRunCmd(g *globalFlags) *cobra.Command {
 	var (
 		file         string
@@ -82,10 +93,7 @@ func runRun(cmd *cobra.Command, args []string, g *globalFlags, file, dataSource 
 
 	result, err := client.RunQuery(ctx, sql, dsID)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("%w after %s (use --timeout to allow more time): %v", errTimeout, timeout, err)
-		}
-		return err
+		return timeoutOr(err, timeout)
 	}
 
 	return format.Write(cmd.OutOrStdout(), outputFormat, result)
@@ -101,18 +109,12 @@ func readSQL(cmd *cobra.Command, args []string, file string) (string, error) {
 	if len(args) == 1 {
 		arg = args[0]
 	}
-
-	switch {
-	case arg != "" && file != "":
-		return "", errors.New("SQL was given both as an argument and via -f; use only one")
-	case arg != "":
-		return arg, nil
-	case file != "":
-		data, err := os.ReadFile(file)
-		if err != nil {
-			return "", err
-		}
-		return string(data), nil
+	sql, ok, err := sqlFromArgOrFile(arg, arg != "", file)
+	if err != nil {
+		return "", err
+	}
+	if ok {
+		return sql, nil
 	}
 
 	in := cmd.InOrStdin()
@@ -123,11 +125,32 @@ func readSQL(cmd *cobra.Command, args []string, file string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read stdin: %w", err)
 	}
-	sql := strings.TrimSpace(string(data))
+	sql = strings.TrimSpace(string(data))
 	if sql == "" {
 		return "", errors.New("no SQL provided on stdin; pass it as an argument, via -f, or on stdin")
 	}
 	return sql, nil
+}
+
+// sqlFromArgOrFile resolves the two SQL sources every command that takes
+// SQL shares, and reports whether either supplied it. hasArg is passed
+// separately because the commands disagree on what counts as an argument:
+// an empty one is no SQL at all where SQL is required, and an explicit
+// empty query where it is optional.
+func sqlFromArgOrFile(arg string, hasArg bool, file string) (string, bool, error) {
+	switch {
+	case hasArg && file != "":
+		return "", false, errors.New("SQL was given both as an argument and via -f; use only one")
+	case hasArg:
+		return arg, true, nil
+	case file != "":
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return "", false, err
+		}
+		return string(data), true, nil
+	}
+	return "", false, nil
 }
 
 // resolveDataSource returns the data source ID to query. The flag overrides

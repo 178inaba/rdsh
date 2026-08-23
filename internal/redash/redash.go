@@ -1,6 +1,7 @@
 // Package redash is a minimal Redash REST API client covering ad-hoc query
-// execution: submit, poll, fetch, cancel, plus saved-query creation and
-// editing, data-source listing and a session check for login verification.
+// execution: submit, poll, fetch, cancel, plus saved-query creation, reading
+// and editing, data-source listing and a session check for login
+// verification.
 package redash
 
 import (
@@ -25,6 +26,12 @@ const (
 )
 
 const cancelTimeout = 10 * time.Second
+
+// ErrQueryVersionConflict reports that a saved query changed on the server
+// between the read that supplied QueryUpdate.Version and the update that
+// carried it, so the update was refused rather than applied on top of an
+// edit the caller never saw.
+var ErrQueryVersionConflict = errors.New("saved query changed on the server since it was read")
 
 // Client talks to one Redash instance authenticated by a user API key
 // (query API keys cannot run ad-hoc queries).
@@ -80,6 +87,10 @@ type Query struct {
 	Query        string `json:"query"`
 	DataSourceID int    `json:"data_source_id"`
 	IsDraft      bool   `json:"is_draft"`
+	// Version is what an update sends back to prove it was composed
+	// against the query as it stands; Redash refuses one carrying a stale
+	// value.
+	Version int `json:"version"`
 }
 
 // NewQuery holds the fields the API accepts when a saved query is created.
@@ -98,6 +109,11 @@ type QueryUpdate struct {
 	Description *string `json:"description,omitempty"`
 	Query       *string `json:"query,omitempty"`
 	IsDraft     *bool   `json:"is_draft,omitempty"`
+	// Version opts into the server's conflict check: set it to the version
+	// of the query this update was composed from and a competing edit fails
+	// the update instead of being silently overwritten. Left nil, the
+	// server applies the update as a last write.
+	Version *int `json:"version,omitempty"`
 }
 
 // DataSource is one Redash data source.
@@ -232,11 +248,27 @@ func (c *Client) CreateQuery(ctx context.Context, q NewQuery) (*Query, error) {
 	return &created, nil
 }
 
+// GetQuery reads one saved query, including the Version an update needs.
+func (c *Client) GetQuery(ctx context.Context, id int) (*Query, error) {
+	var q Query
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/api/queries/%d", id), nil, &q); err != nil {
+		return nil, err
+	}
+	return &q, nil
+}
+
 // UpdateQuery changes the fields u sets on the saved query and returns it
-// as the server now holds it.
+// as the server now holds it. When u carries a Version, the 409 a stale one
+// earns is wrapped in ErrQueryVersionConflict; without one the server
+// applies the update unconditionally, so a 409 means something else and is
+// returned as it came.
 func (c *Client) UpdateQuery(ctx context.Context, id int, u QueryUpdate) (*Query, error) {
 	var updated Query
 	if err := c.do(ctx, http.MethodPost, fmt.Sprintf("/api/queries/%d", id), u, &updated); err != nil {
+		var status *statusError
+		if u.Version != nil && errors.As(err, &status) && status.statusCode == http.StatusConflict {
+			return nil, fmt.Errorf("%w: %v", ErrQueryVersionConflict, err)
+		}
 		return nil, err
 	}
 	return &updated, nil
@@ -245,7 +277,14 @@ func (c *Client) UpdateQuery(ctx context.Context, id int, u QueryUpdate) (*Query
 // QueryURL is where a saved query is read in a browser. The API returns no
 // URL of its own, so it is built from the base URL NewClient normalised.
 func (c *Client) QueryURL(id int) string {
-	return fmt.Sprintf("%s/queries/%d", c.baseURL, id)
+	return fmt.Sprintf("%s%d", c.QueryURLPrefix(), id)
+}
+
+// QueryURLPrefix is what every query URL on this instance begins with. A
+// caller reading a query URL matches against this rather than rebuilding it
+// from the base URL, so the two directions cannot drift apart.
+func (c *Client) QueryURLPrefix() string {
+	return c.baseURL + "/queries/"
 }
 
 // ListDataSources returns the data sources visible to the API key.
@@ -306,14 +345,32 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	return nil
 }
 
+// statusError is a non-2xx response. The status is kept rather than only
+// formatted into the message so a caller that treats one code as its own
+// outcome can recognise it without matching on text.
+type statusError struct {
+	method     string
+	path       string
+	statusCode int
+	message    string
+}
+
+func (e *statusError) Error() string {
+	msg := ""
+	if e.message != "" {
+		msg = ": " + e.message
+	}
+	return fmt.Sprintf("%s %s: HTTP %d%s", e.method, e.path, e.statusCode, msg)
+}
+
 func apiError(method, path string, resp *http.Response) error {
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	var payload struct {
 		Message string `json:"message"`
 	}
 	msg := ""
-	if json.Unmarshal(data, &payload) == nil && payload.Message != "" {
-		msg = ": " + payload.Message
+	if json.Unmarshal(data, &payload) == nil {
+		msg = payload.Message
 	}
-	return fmt.Errorf("%s %s: HTTP %d%s", method, path, resp.StatusCode, msg)
+	return &statusError{method: method, path: path, statusCode: resp.StatusCode, message: msg}
 }

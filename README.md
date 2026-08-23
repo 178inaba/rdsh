@@ -46,6 +46,15 @@ rdsh query create --name "Weekly signups" -f signups.sql
 rdsh query create --name "signups (part)" --draft -f part.sql
 ```
 
+Editing a saved query keeps the same URL. The query is named by its ID or by its URL, and any combination of new SQL, `--name`, `--description`, and `--publish`/`--draft` can be changed in one call:
+
+```sh
+rdsh query update 42 -f signups.sql
+rdsh query update https://redash.example.com/queries/42 --name "Weekly signups (EU)" --publish
+```
+
+Unlike `rdsh run` and `rdsh query create`, `rdsh query update` never reads stdin — SQL is optional there, so falling back to it would turn whatever was piped in into the query. The update also carries the version the query had when it was read, so an edit made in the Redash UI in the meantime fails the command instead of being overwritten; read the query again and re-run.
+
 ### Profiles
 
 ```sh
@@ -62,7 +71,7 @@ RDSH_URL=https://redash.example.com RDSH_API_KEY=... rdsh run "SELECT 1" --data-
 
 ### Timeouts
 
-`rdsh run` and `rdsh query create` both take `--timeout`, defaulting to 90s; exceeding it exits with code 124. For `rdsh run` that also cancels the server-side job.
+`rdsh run`, `rdsh query create`, and `rdsh query update` all take `--timeout`, defaulting to 90s; exceeding it exits with code 124. For `rdsh run` that also cancels the server-side job.
 
 ```sh
 rdsh run -f heavy.sql --timeout 30m
