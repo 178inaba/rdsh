@@ -63,6 +63,15 @@ rdsh query list --mine --limit 100
 
 The columns are `id`, `name`, `is_draft`, and `url`. Only the first 30 rows are printed unless `--limit` says otherwise; when the server holds more, a note saying so goes to stderr and the command still exits 0, so stdout stays parseable as the listing alone.
 
+Reading one back prints its SQL and nothing else, so a query a colleague shared can be run for a result of your own without opening Redash:
+
+```sh
+rdsh query show 42 > signups.sql
+rdsh run -f signups.sql
+```
+
+`rdsh query show` takes the same ID or URL as `update`. Its `--format` is the one exception to the shared output formats: `json` is the only value it accepts — a multi-line SQL body does not fit a row format — and it prints one object with `id`, `name`, `description`, `data_source_id`, `is_draft`, `url`, and `query`. Without `--format`, the SQL itself is what comes out.
+
 Unlike `rdsh run` and `rdsh query create`, `rdsh query update` never reads stdin — SQL is optional there, so falling back to it would turn whatever was piped in into the query. The update also carries the version the query had when it was read, so an edit made in the Redash UI in the meantime fails the command instead of being overwritten; read the query again and re-run.
 
 ### Profiles
@@ -81,7 +90,7 @@ RDSH_URL=https://redash.example.com RDSH_API_KEY=... rdsh run "SELECT 1" --data-
 
 ### Timeouts
 
-`rdsh run`, `rdsh query create`, `rdsh query update`, and `rdsh query list` all take `--timeout`, defaulting to 90s; exceeding it exits with code 124. For `rdsh run` that also cancels the server-side job.
+`rdsh run`, `rdsh query create`, `rdsh query update`, `rdsh query list`, and `rdsh query show` all take `--timeout`, defaulting to 90s; exceeding it exits with code 124. For `rdsh run` that also cancels the server-side job.
 
 ```sh
 rdsh run -f heavy.sql --timeout 30m
