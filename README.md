@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/178inaba/rdsh/actions/workflows/ci.yml/badge.svg)](https://github.com/178inaba/rdsh/actions/workflows/ci.yml)
 
-A CLI that runs ad-hoc SQL on [Redash](https://redash.io/) and prints the result — one command per round trip, designed so AI coding agents can call it from a shell.
+A CLI that runs ad-hoc SQL on [Redash](https://redash.io/) and manages saved queries there — one command per round trip, designed so AI coding agents can call it from a shell.
 
 ## Install
 
@@ -31,6 +31,21 @@ rdsh run -f query.sql
 
 Run `rdsh --help` for the full reference.
 
+### Saved queries
+
+Save SQL as a Redash query and get a URL to share. Run it first: Redash attaches the latest result of the same SQL and data source to the query as it is created, so the URL opens with data on it instead of needing a second execution.
+
+```sh
+rdsh run -f signups.sql
+rdsh query create --name "Weekly signups" -f signups.sql
+```
+
+`query create` prints the URL and nothing else; the trailing segment is the query ID, which is what a Query Results data source needs for `query_<id>` references. New queries are published — visible in everyone's query list — unless `--draft` is passed:
+
+```sh
+rdsh query create --name "signups (part)" --draft -f part.sql
+```
+
 ### Profiles
 
 ```sh
@@ -47,11 +62,13 @@ RDSH_URL=https://redash.example.com RDSH_API_KEY=... rdsh run "SELECT 1" --data-
 
 ### Timeouts
 
-The default timeout is 90s; exceeding it exits with code 124, cancelling the server-side job.
+`rdsh run` and `rdsh query create` both take `--timeout`, defaulting to 90s; exceeding it exits with code 124. For `rdsh run` that also cancels the server-side job.
 
 ```sh
 rdsh run -f heavy.sql --timeout 30m
 ```
+
+One case exits 1 rather than 124: a `query create` that saved the query but could not publish it, including when the timeout is what stopped the publish. The query exists as a draft, so stderr carries its URL — re-running the command would save a second query.
 
 ### Interrupts
 

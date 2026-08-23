@@ -1,6 +1,6 @@
 // Package redash is a minimal Redash REST API client covering ad-hoc query
-// execution: submit, poll, fetch, cancel, plus data-source listing and a
-// session check for login verification.
+// execution: submit, poll, fetch, cancel, plus saved-query creation and
+// editing, data-source listing and a session check for login verification.
 package redash
 
 import (
@@ -70,6 +70,34 @@ type Column struct {
 type QueryResult struct {
 	Columns []Column
 	Rows    []map[string]any
+}
+
+// Query is a saved Redash query.
+type Query struct {
+	ID           int    `json:"id"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	Query        string `json:"query"`
+	DataSourceID int    `json:"data_source_id"`
+	IsDraft      bool   `json:"is_draft"`
+}
+
+// NewQuery holds the fields the API accepts when a saved query is created.
+type NewQuery struct {
+	Name         string `json:"name"`
+	Query        string `json:"query"`
+	DataSourceID int    `json:"data_source_id"`
+	Description  string `json:"description,omitempty"`
+}
+
+// QueryUpdate holds the fields to change on a saved query; a nil field is
+// left as it is. Pointers rather than plain fields so clearing a value
+// (an empty description) stays distinguishable from not touching it.
+type QueryUpdate struct {
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Query       *string `json:"query,omitempty"`
+	IsDraft     *bool   `json:"is_draft,omitempty"`
 }
 
 // DataSource is one Redash data source.
@@ -187,6 +215,37 @@ func (c *Client) getQueryResult(ctx context.Context, resultID int) (*QueryResult
 		return nil, err
 	}
 	return &QueryResult{Columns: resp.QueryResult.Data.Columns, Rows: resp.QueryResult.Data.Rows}, nil
+}
+
+// CreateQuery saves a new query. Redash forces the new query to be a draft
+// whatever the request body says, so publishing it is a second call to
+// UpdateQuery rather than a field set here.
+//
+// Redash attaches the latest result of a matching query text and data
+// source to the new query as it is created, which is what lets a run
+// followed by a create share results without executing them twice.
+func (c *Client) CreateQuery(ctx context.Context, q NewQuery) (*Query, error) {
+	var created Query
+	if err := c.do(ctx, http.MethodPost, "/api/queries", q, &created); err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+// UpdateQuery changes the fields u sets on the saved query and returns it
+// as the server now holds it.
+func (c *Client) UpdateQuery(ctx context.Context, id int, u QueryUpdate) (*Query, error) {
+	var updated Query
+	if err := c.do(ctx, http.MethodPost, fmt.Sprintf("/api/queries/%d", id), u, &updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+// QueryURL is where a saved query is read in a browser. The API returns no
+// URL of its own, so it is built from the base URL NewClient normalised.
+func (c *Client) QueryURL(id int) string {
+	return fmt.Sprintf("%s/queries/%d", c.baseURL, id)
 }
 
 // ListDataSources returns the data sources visible to the API key.

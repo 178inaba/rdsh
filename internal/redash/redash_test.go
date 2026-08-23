@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +30,8 @@ type fakeRedash struct {
 	cancelled     bool
 	cancelStatus  int // HTTP status for DELETE, default 200
 	submittedBody map[string]any
+	createdQuery  map[string]any // body of POST /api/queries
+	updatedQuery  map[string]any // body of POST /api/queries/7
 	gotAuth       []string
 }
 
@@ -88,6 +91,27 @@ func (f *fakeRedash) server() *httptest.Server {
 			{"id": 1, "name": "warehouse"},
 			{"id": 2, "name": "logs"},
 		})
+	})
+	mux.HandleFunc("POST /api/queries", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if err := json.NewDecoder(r.Body).Decode(&f.createdQuery); err != nil {
+			f.t.Errorf("decode created query: %v", err)
+		}
+		// Redash forces every new query to be a draft, whatever the request
+		// said, so the fake serves is_draft back as true.
+		writeJSON(w, map[string]any{
+			"id": 7, "name": f.createdQuery["name"], "query": f.createdQuery["query"],
+			"data_source_id": f.createdQuery["data_source_id"], "is_draft": true,
+		})
+	})
+	mux.HandleFunc("POST /api/queries/7", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if err := json.NewDecoder(r.Body).Decode(&f.updatedQuery); err != nil {
+			f.t.Errorf("decode updated query: %v", err)
+		}
+		writeJSON(w, map[string]any{"id": 7, "name": "saved", "is_draft": false})
 	})
 	mux.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Key good-key" {
@@ -247,5 +271,73 @@ func TestGetSession(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "401") || !strings.Contains(err.Error(), "login") {
 		t.Errorf("GetSession() error = %v, want HTTP status and server message included", err)
+	}
+}
+
+func TestCreateQuery(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	q, err := newTestClient(srv, "k").CreateQuery(context.Background(), redash.NewQuery{
+		Name: "saved", Query: "SELECT 1", DataSourceID: 3, Description: "why it exists",
+	})
+	if err != nil {
+		t.Fatalf("CreateQuery() error = %v", err)
+	}
+	if q.ID != 7 || !q.IsDraft {
+		t.Errorf("CreateQuery() = %+v, want ID 7 and the draft Redash forces on creation", q)
+	}
+	want := map[string]any{
+		"name": "saved", "query": "SELECT 1", "data_source_id": float64(3),
+		"description": "why it exists",
+	}
+	if !reflect.DeepEqual(f.createdQuery, want) {
+		t.Errorf("created query body = %v, want %v", f.createdQuery, want)
+	}
+}
+
+// TestCreateQueryOmitsEmptyDescription keeps an unset --description from
+// being sent as an empty one, which would overwrite nothing on creation but
+// makes the request say something the caller did not.
+func TestCreateQueryOmitsEmptyDescription(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	if _, err := newTestClient(srv, "k").CreateQuery(context.Background(), redash.NewQuery{
+		Name: "saved", Query: "SELECT 1", DataSourceID: 3,
+	}); err != nil {
+		t.Fatalf("CreateQuery() error = %v", err)
+	}
+	if _, ok := f.createdQuery["description"]; ok {
+		t.Errorf("created query body = %v, want no description key", f.createdQuery)
+	}
+}
+
+// TestUpdateQuery checks that only the fields the caller set are sent: an
+// update that also carried the fields it left alone would overwrite a query
+// edited in the Redash UI since it was read.
+func TestUpdateQuery(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	draft := false
+	q, err := newTestClient(srv, "k").UpdateQuery(context.Background(), 7, redash.QueryUpdate{IsDraft: &draft})
+	if err != nil {
+		t.Fatalf("UpdateQuery() error = %v", err)
+	}
+	if q.ID != 7 || q.IsDraft {
+		t.Errorf("UpdateQuery() = %+v, want ID 7 and is_draft false", q)
+	}
+	if want := map[string]any{"is_draft": false}; !reflect.DeepEqual(f.updatedQuery, want) {
+		t.Errorf("updated query body = %v, want %v", f.updatedQuery, want)
+	}
+}
+
+func TestQueryURL(t *testing.T) {
+	if got := redash.NewClient("https://redash.example.com/", "k").QueryURL(7); got != "https://redash.example.com/queries/7" {
+		t.Errorf("QueryURL(7) = %q, want the trailing slash trimmed", got)
 	}
 }
