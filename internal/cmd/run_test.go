@@ -37,6 +37,10 @@ const (
 	savedQueryVersion = 3
 )
 
+// defaultSavedQuerySQL is the SQL the fake serves for that query unless a
+// test asks for its own.
+const defaultSavedQuerySQL = "SELECT 1"
+
 // fakeServer emulates just enough of Redash for the command layer: the
 // submit response already carries a finished (or never-finishing) job so
 // tests do not depend on the client's poll interval. The hang* fields make
@@ -55,10 +59,14 @@ type fakeServer struct {
 	conflict        bool // POST /api/queries/<id> returns 409
 	hangListQueries bool // GET /api/queries never answers
 	savedQueries    int  // queries the listing endpoints hold
-	cancelled       bool
-	submitted       bool
-	fetched         bool           // GET /api/queries/<id> arrived
-	created         map[string]any // body of POST /api/queries
+	// savedQuerySQL is the SQL GET /api/queries/<id> serves; empty means
+	// defaultSavedQuerySQL. A test that reads the SQL back sets it, which is
+	// what makes the show command's newline handling observable.
+	savedQuerySQL string
+	cancelled     bool
+	submitted     bool
+	fetched       bool           // GET /api/queries/<id> arrived
+	created       map[string]any // body of POST /api/queries
 	// listed is the query string of every listing request that arrived, in
 	// order, so a test can check both the endpoint and how it was called.
 	listed []*url.URL
@@ -135,8 +143,12 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 			f.park(r)
 			return
 		}
+		sql := f.savedQuerySQL
+		if sql == "" {
+			sql = defaultSavedQuerySQL
+		}
 		mustJSON(w, map[string]any{
-			"id": savedQueryID, "name": "saved", "query": "SELECT 1",
+			"id": savedQueryID, "name": "saved", "description": "what it is for", "query": sql,
 			"data_source_id": 5, "is_draft": true, "version": savedQueryVersion,
 		})
 	})
