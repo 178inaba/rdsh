@@ -93,8 +93,16 @@ func writeJSON(w io.Writer, result *redash.QueryResult) error {
 	if rows == nil {
 		rows = []map[string]any{}
 	}
-	enc := json.NewEncoder(w)
-	return enc.Encode(rows)
+	return WriteObject(w, rows)
+}
+
+// WriteObject renders one value as JSON, for output that is a single record
+// rather than the row set Write renders — the saved query `rdsh query show`
+// reads. Both go through here so that every JSON stream rdsh prints comes
+// from one encoder: the standard HTML escaping is then a decision made once
+// rather than a coincidence between two call sites.
+func WriteObject(w io.Writer, v any) error {
+	return json.NewEncoder(w).Encode(v)
 }
 
 func cellString(v any) string {

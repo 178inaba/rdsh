@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -489,14 +488,14 @@ func runQueryShow(cmd *cobra.Command, args []string, g *globalFlags, outputForma
 	return nil
 }
 
-// writeQueryDetail prints the saved query as one JSON object. It is written
-// here rather than through internal/format because that package renders row
-// sets — the shape run and the listing share — and a saved query read on its
-// own is a single object. The SQL is printed as it is stored; normalising
+// writeQueryDetail prints the saved query as one JSON object. The shape is
+// this command's own — format.Write renders the row sets run and the listing
+// share — but the encoding goes through internal/format like every other
+// JSON stream rdsh prints. The SQL is printed as it is stored; normalising
 // the trailing newline is a property of the raw stream above, not of the
 // query.
 func writeQueryDetail(w io.Writer, q *redash.Query, url string) error {
-	return json.NewEncoder(w).Encode(struct {
+	return format.WriteObject(w, struct {
 		ID           int    `json:"id"`
 		Name         string `json:"name"`
 		Description  string `json:"description"`
