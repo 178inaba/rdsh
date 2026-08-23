@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -114,6 +116,16 @@ type QueryUpdate struct {
 	// the update instead of being silently overwritten. Left nil, the
 	// server applies the update as a last write.
 	Version *int `json:"version,omitempty"`
+}
+
+// QueryListOptions narrows what ListQueries returns.
+type QueryListOptions struct {
+	// Search is the API's q full-text search. Empty means no filtering.
+	Search string
+	// Mine lists only the caller's own queries.
+	Mine bool
+	// Limit caps how many queries are returned.
+	Limit int
 }
 
 // DataSource is one Redash data source.
@@ -272,6 +284,64 @@ func (c *Client) UpdateQuery(ctx context.Context, id int, u QueryUpdate) (*Query
 		return nil, err
 	}
 	return &updated, nil
+}
+
+// queryListPageSize is how many queries one listing request asks for. The
+// server bounds page_size at 1-250; staying well inside that leaves room
+// for an instance with a stricter bound, and one request still covers any
+// ordinary limit.
+const queryListPageSize = 100
+
+// ListQueries returns up to opts.Limit saved queries and the total number
+// the server holds, which is what lets a caller tell that the limit
+// truncated the listing rather than that it saw everything.
+//
+// Without a search term the server orders them newest first; with one the
+// order is its own search ranking, so no order is promised here.
+//
+// The API paginates, so this walks the pages itself. It stops from the
+// count the server reports rather than by probing for an empty page:
+// Redash refuses a page past the end with 400 "Page is out of range".
+func (c *Client) ListQueries(ctx context.Context, opts QueryListOptions) ([]Query, int, error) {
+	if opts.Limit < 1 {
+		return nil, 0, fmt.Errorf("limit must be at least 1 (got %d)", opts.Limit)
+	}
+
+	path := "/api/queries"
+	if opts.Mine {
+		path = "/api/queries/my"
+	}
+	values := url.Values{}
+	values.Set("page_size", strconv.Itoa(min(opts.Limit, queryListPageSize)))
+	if opts.Search != "" {
+		values.Set("q", opts.Search)
+	}
+
+	queries, count := []Query{}, 0
+	for page := 1; ; page++ {
+		values.Set("page", strconv.Itoa(page))
+		var resp struct {
+			Count   int     `json:"count"`
+			Results []Query `json:"results"`
+		}
+		if err := c.do(ctx, http.MethodGet, path+"?"+values.Encode(), nil, &resp); err != nil {
+			return nil, 0, err
+		}
+		count = resp.Count
+		queries = append(queries, resp.Results...)
+		// The empty-page check is a backstop rather than the stop
+		// condition: a count that disagrees with what the pages actually
+		// hold would otherwise loop until the server refused a page.
+		if len(queries) >= opts.Limit || len(queries) >= count || len(resp.Results) == 0 {
+			break
+		}
+	}
+	// The last page can overshoot when the limit is not a multiple of the
+	// page size.
+	if len(queries) > opts.Limit {
+		queries = queries[:opts.Limit]
+	}
+	return queries, count, nil
 }
 
 // QueryURL is where a saved query is read in a browser. The API returns no

@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -34,7 +37,16 @@ type fakeRedash struct {
 	updatedQuery  map[string]any // body of POST /api/queries/7
 	queryVersion  int            // version served by GET /api/queries/7
 	updateStatus  int            // HTTP status for POST /api/queries/7, default 200
+	savedQueries  int            // queries the listing endpoints hold
+	listRequests  []listRequest  // what reached the listing endpoints, in order
 	gotAuth       []string
+}
+
+// listRequest is one request to a listing endpoint, kept so a test can
+// check both which endpoint answered and how the walk was parameterised.
+type listRequest struct {
+	path   string
+	values url.Values
 }
 
 func (f *fakeRedash) server() *httptest.Server {
@@ -128,6 +140,8 @@ func (f *fakeRedash) server() *httptest.Server {
 		}
 		writeJSON(w, map[string]any{"id": 7, "name": "saved", "is_draft": false})
 	})
+	mux.HandleFunc("GET /api/queries", f.handleQueryList)
+	mux.HandleFunc("GET /api/queries/my", f.handleQueryList)
 	mux.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Key good-key" {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -137,6 +151,50 @@ func (f *fakeRedash) server() *httptest.Server {
 		writeJSON(w, map[string]any{"id": 1})
 	})
 	return httptest.NewServer(mux)
+}
+
+// handleQueryList serves both listing endpoints the way the real ones do,
+// including the two refusals a client walking the pages has to stay clear
+// of: Redash's paginate() answers a page past the end with 400 "Page is out
+// of range" rather than an empty page, and bounds page_size at 1-250. The
+// fake refuses them too, so a walk that oversteps fails a test here instead
+// of only against a real server.
+func (f *fakeRedash) handleQueryList(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	values := r.URL.Query()
+	f.listRequests = append(f.listRequests, listRequest{path: r.URL.Path, values: values})
+
+	page, err := strconv.Atoi(values.Get("page"))
+	if err != nil {
+		f.t.Errorf("page = %q: %v", values.Get("page"), err)
+	}
+	pageSize, err := strconv.Atoi(values.Get("page_size"))
+	if err != nil {
+		f.t.Errorf("page_size = %q: %v", values.Get("page_size"), err)
+	}
+
+	if pageSize < 1 || pageSize > 250 {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"message": "Page size is out of range (1-250)."})
+		return
+	}
+	if (page-1)*pageSize+1 > f.savedQueries && f.savedQueries > 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"message": "Page is out of range."})
+		return
+	}
+
+	results := []map[string]any{}
+	for i := (page - 1) * pageSize; i < f.savedQueries && len(results) < pageSize; i++ {
+		results = append(results, map[string]any{
+			"id": i + 1, "name": fmt.Sprintf("query %d", i+1), "is_draft": i%2 == 0,
+		})
+	}
+	writeJSON(w, map[string]any{
+		"count": f.savedQueries, "page": page, "page_size": pageSize, "results": results,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -425,5 +483,201 @@ func TestUpdateQueryConflictWithoutVersionIsNotAConflict(t *testing.T) {
 func TestQueryURL(t *testing.T) {
 	if got := redash.NewClient("https://redash.example.com/", "k").QueryURL(7); got != "https://redash.example.com/queries/7" {
 		t.Errorf("QueryURL(7) = %q, want the trailing slash trimmed", got)
+	}
+}
+
+// listQueryIDs reduces a listing to the IDs it returned, which is all the
+// walking tests need to check about the rows themselves.
+func listQueryIDs(queries []redash.Query) []int {
+	ids := make([]int, len(queries))
+	for i, q := range queries {
+		ids[i] = q.ID
+	}
+	return ids
+}
+
+// pagesRequested reports the page numbers the listing endpoints were asked
+// for, in order. The walking tests assert on this rather than only on the
+// rows: a client that asks for one page too many gets a 400 from the fake,
+// but one that asks for pages it did not need would otherwise pass unseen.
+func pagesRequested(t *testing.T, reqs []listRequest) []string {
+	t.Helper()
+	pages := make([]string, len(reqs))
+	for i, req := range reqs {
+		pages[i] = req.values.Get("page")
+	}
+	return pages
+}
+
+func TestListQueries(t *testing.T) {
+	f := &fakeRedash{t: t, savedQueries: 3}
+	srv := f.server()
+	defer srv.Close()
+
+	queries, count, err := newTestClient(srv, "k").ListQueries(context.Background(), redash.QueryListOptions{Limit: 30})
+	if err != nil {
+		t.Fatalf("ListQueries() error = %v", err)
+	}
+	if count != 3 {
+		t.Errorf("count = %d, want 3", count)
+	}
+	if want := []int{1, 2, 3}; !reflect.DeepEqual(listQueryIDs(queries), want) {
+		t.Errorf("IDs = %v, want %v", listQueryIDs(queries), want)
+	}
+	if queries[0].Name != "query 1" || !queries[0].IsDraft {
+		t.Errorf("queries[0] = %+v, want the name and draft flag the server served", queries[0])
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if want := []string{"1"}; !reflect.DeepEqual(pagesRequested(t, f.listRequests), want) {
+		t.Errorf("pages requested = %v, want %v", pagesRequested(t, f.listRequests), want)
+	}
+	if got := f.listRequests[0].path; got != "/api/queries" {
+		t.Errorf("path = %q, want /api/queries", got)
+	}
+	if _, ok := f.listRequests[0].values["q"]; ok {
+		t.Errorf("query string = %v, want no q on an unfiltered listing", f.listRequests[0].values)
+	}
+}
+
+// TestListQueriesWalksPages covers a limit larger than one page: the client
+// keeps asking until it has the limit, and the rows arrive in server order
+// rather than page-interleaved.
+func TestListQueriesWalksPages(t *testing.T) {
+	f := &fakeRedash{t: t, savedQueries: 300}
+	srv := f.server()
+	defer srv.Close()
+
+	queries, count, err := newTestClient(srv, "k").ListQueries(context.Background(), redash.QueryListOptions{Limit: 250})
+	if err != nil {
+		t.Fatalf("ListQueries() error = %v", err)
+	}
+	if count != 300 {
+		t.Errorf("count = %d, want the server's total 300 even though fewer rows were returned", count)
+	}
+	if len(queries) != 250 {
+		t.Fatalf("len(queries) = %d, want the limit 250", len(queries))
+	}
+	if queries[0].ID != 1 || queries[249].ID != 250 {
+		t.Errorf("IDs run %d..%d, want 1..250 in server order", queries[0].ID, queries[249].ID)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if want := []string{"1", "2", "3"}; !reflect.DeepEqual(pagesRequested(t, f.listRequests), want) {
+		t.Errorf("pages requested = %v, want %v", pagesRequested(t, f.listRequests), want)
+	}
+}
+
+// TestListQueriesStopsAtCount is the regression this walk is most likely to
+// break: with the server holding exactly a whole number of pages, a client
+// that probes for an empty page instead of stopping at count asks for one
+// page too many, and the real server answers that with 400 rather than an
+// empty page. The fake refuses it the same way, so this fails rather than
+// silently costing a round trip.
+func TestListQueriesStopsAtCount(t *testing.T) {
+	f := &fakeRedash{t: t, savedQueries: 200}
+	srv := f.server()
+	defer srv.Close()
+
+	queries, count, err := newTestClient(srv, "k").ListQueries(context.Background(), redash.QueryListOptions{Limit: 250})
+	if err != nil {
+		t.Fatalf("ListQueries() error = %v", err)
+	}
+	if count != 200 || len(queries) != 200 {
+		t.Errorf("ListQueries() = %d rows, count %d, want all 200", len(queries), count)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if want := []string{"1", "2"}; !reflect.DeepEqual(pagesRequested(t, f.listRequests), want) {
+		t.Errorf("pages requested = %v, want %v and no probe past the end", pagesRequested(t, f.listRequests), want)
+	}
+}
+
+// TestListQueriesLimitBoundsThePageSize keeps a small limit from fetching a
+// whole page to throw most of it away.
+func TestListQueriesLimitBoundsThePageSize(t *testing.T) {
+	f := &fakeRedash{t: t, savedQueries: 300}
+	srv := f.server()
+	defer srv.Close()
+
+	queries, count, err := newTestClient(srv, "k").ListQueries(context.Background(), redash.QueryListOptions{Limit: 5})
+	if err != nil {
+		t.Fatalf("ListQueries() error = %v", err)
+	}
+	if len(queries) != 5 || count != 300 {
+		t.Errorf("ListQueries() = %d rows, count %d, want 5 rows out of 300", len(queries), count)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.listRequests) != 1 {
+		t.Fatalf("requests = %d, want a single page", len(f.listRequests))
+	}
+	if got := f.listRequests[0].values.Get("page_size"); got != "5" {
+		t.Errorf("page_size = %q, want the limit 5", got)
+	}
+}
+
+func TestListQueriesSearch(t *testing.T) {
+	f := &fakeRedash{t: t, savedQueries: 2}
+	srv := f.server()
+	defer srv.Close()
+
+	if _, _, err := newTestClient(srv, "k").ListQueries(context.Background(), redash.QueryListOptions{
+		Search: "signups", Limit: 30,
+	}); err != nil {
+		t.Fatalf("ListQueries() error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if got := f.listRequests[0].values.Get("q"); got != "signups" {
+		t.Errorf("q = %q, want the search term", got)
+	}
+	if got := f.listRequests[0].path; got != "/api/queries" {
+		t.Errorf("path = %q, want /api/queries", got)
+	}
+}
+
+func TestListQueriesMine(t *testing.T) {
+	f := &fakeRedash{t: t, savedQueries: 2}
+	srv := f.server()
+	defer srv.Close()
+
+	if _, _, err := newTestClient(srv, "k").ListQueries(context.Background(), redash.QueryListOptions{
+		Mine: true, Search: "signups", Limit: 30,
+	}); err != nil {
+		t.Fatalf("ListQueries() error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if got := f.listRequests[0].path; got != "/api/queries/my" {
+		t.Errorf("path = %q, want /api/queries/my", got)
+	}
+	if got := f.listRequests[0].values.Get("q"); got != "signups" {
+		t.Errorf("q = %q, want the search term to survive --mine", got)
+	}
+}
+
+// TestListQueriesNoMatches covers the empty listing, which the real server
+// answers with count 0 rather than the out-of-range refusal it gives for a
+// page past a non-empty result.
+func TestListQueriesNoMatches(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	queries, count, err := newTestClient(srv, "k").ListQueries(context.Background(), redash.QueryListOptions{
+		Search: "nothing matches this", Limit: 30,
+	})
+	if err != nil {
+		t.Fatalf("ListQueries() error = %v", err)
+	}
+	if len(queries) != 0 || count != 0 {
+		t.Errorf("ListQueries() = %d rows, count %d, want nothing", len(queries), count)
 	}
 }
