@@ -19,17 +19,6 @@ func newQueryCmd(g *globalFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "query",
 		Short: "Manage saved queries",
-		// A group command is not runnable, and cobra answers an argument
-		// that is not one of its subcommands by printing help to stdout and
-		// returning nil — a success, on the stream results are read from.
-		// A RunE makes the group runnable, which is what gets cobra as far
-		// as validating the arguments; NoArgs then reports the stray one.
-		// #27 fixes the same hole for every group at the root, and this can
-		// go when it lands.
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return cmd.Help()
-		},
 	}
 	cmd.AddCommand(newQueryCreateCmd(g), newQueryUpdateCmd(g), newQueryListCmd(g), newQueryShowCmd(g))
 	return cmd
