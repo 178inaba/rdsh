@@ -190,27 +190,37 @@ func assertUnpublishedReport(t *testing.T, err error, srv *httptest.Server) {
 	}
 }
 
-// TestQueryGroupArguments covers what a group command does with something
-// that is not one of its subcommands. cobra answers that by printing help
-// to stdout and exiting 0 (#27), which would make the pre-rename `rdsh
-// query "SELECT 1"` look like a success — and the rename deliberately left
-// no alias and no migration hint, so an old call has to fail rather than
-// quietly do nothing.
+// TestQueryGroupArguments covers what this group does with something that
+// is not one of its subcommands: the root's help override reports it, and
+// the failure reaches a caller as an error rather than as the nil cobra
+// returns for it. What makes it worth pinning here as well as in
+// execute_test.go is the pre-rename `rdsh query "SELECT 1"` — the rename
+// deliberately left no alias and no migration hint, so an old call has to
+// fail rather than quietly do nothing.
 func TestQueryGroupArguments(t *testing.T) {
 	tests := []struct {
 		name    string
 		args    []string
-		wantErr string
+		wantErr []string // every one of these appears in the error
 	}{
 		{name: "no arguments prints help", args: []string{"query"}},
-		{name: "mistyped subcommand", args: []string{"query", "creat"}, wantErr: "unknown command"},
-		{name: "pre-rename invocation", args: []string{"query", "SELECT 1"}, wantErr: "unknown command"},
+		{
+			name:    "mistyped subcommand",
+			args:    []string{"query", "creat"},
+			wantErr: []string{"unknown command", "Did you mean this?", "create"},
+		},
+		{
+			// Nothing this far from a subcommand name yields a candidate.
+			name:    "pre-rename invocation",
+			args:    []string{"query", "SELECT 1"},
+			wantErr: []string{"unknown command"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// No server: none of these resolves a connection.
 			out, err := runRdsh(t, nil, "", tt.args...)
-			if tt.wantErr == "" {
+			if len(tt.wantErr) == 0 {
 				if err != nil {
 					t.Fatalf("error = %v, want the group's help", err)
 				}
@@ -219,8 +229,13 @@ func TestQueryGroupArguments(t *testing.T) {
 				}
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Errorf("error = %v, want one mentioning %s", err, tt.wantErr)
+			if err == nil {
+				t.Fatalf("error = nil, want one mentioning %s", tt.wantErr[0])
+			}
+			for _, want := range tt.wantErr {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %v, want one mentioning %s", err, want)
+				}
 			}
 		})
 	}

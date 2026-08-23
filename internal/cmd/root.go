@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -28,8 +29,21 @@ type globalFlags struct {
 	profile string
 }
 
-func newRootCmd() *cobra.Command {
+// helpReport carries a failure the help function found back out to
+// Execute. cobra hands a non-runnable command's arguments to the help
+// function and then returns nil whatever that function did, so a stray
+// argument caught there cannot come back as ExecuteContext's error and has
+// to travel beside it. It is per-tree rather than a package-level var for
+// the same reason globalFlags is.
+type helpReport struct {
+	// err is what the override below built, or nil if it never fired.
+	// Execute prints it and maps it like any other failure.
+	err error
+}
+
+func newRootCmd() (*cobra.Command, *helpReport) {
 	var g globalFlags
+	var report helpReport
 
 	cmd := &cobra.Command{
 		Use:   "rdsh",
@@ -41,6 +55,35 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 	cmd.PersistentFlags().StringVar(&g.profile, "profile", "", "profile to use for this invocation")
+
+	// cobra answers an argument that is not one of a group command's
+	// subcommands by printing that group's help to stdout and returning
+	// nil: a success, on the stream results are read from. It gets there
+	// through the `!Runnable()` branch of Command.execute, which returns
+	// flag.ErrHelp before ValidateArgs is ever reached, so no Args on a
+	// group can catch it — cobra's own completion command has NoArgs and
+	// still exits 0. Overriding the help function is what catches it, and
+	// one override here covers every group in the tree, including the
+	// completion command cobra generates during Execute, because HelpFunc
+	// walks to the parent when a command has none of its own.
+	//
+	// The default rendering has to be captured before the override is
+	// installed: afterwards Help() resolves to the override, so the
+	// fall-through would recurse.
+	defaultHelp := cmd.HelpFunc()
+	cmd.SetHelpFunc(func(c *cobra.Command, args []string) {
+		// c.Flags().Args() rather than args, which is the whole command
+		// line as the root received it. execute parses the flags before
+		// it decides the command is not runnable, so this is populated by
+		// the time the help function is reached.
+		stray := c.Flags().Args()
+		if help, _ := c.Flags().GetBool("help"); help || c.Runnable() || len(stray) == 0 {
+			defaultHelp(c, args)
+			return
+		}
+		report.err = unknownSubcommandError(c, stray[0])
+	})
+
 	cmd.AddCommand(
 		newRunCmd(&g),
 		newQueryCmd(&g),
@@ -51,7 +94,43 @@ func newRootCmd() *cobra.Command {
 		newAuthCmd(),
 		newProfileCmd(),
 	)
-	return cmd
+	return cmd, &report
+}
+
+// unknownSubcommandError reports an argument that is not one of cmd's
+// subcommands, in the words and with the candidates cobra's own legacyArgs
+// produces for the root — the only place cobra reports this itself.
+func unknownSubcommandError(cmd *cobra.Command, arg string) error {
+	var candidates []string
+	if arg == "help" {
+		// cobra registers a help command on the root alone, so under a
+		// group `help` is as stray as anything else. SuggestionsFor only
+		// ever looks at registered subcommands, so the flag that does
+		// what the caller meant has to be named here.
+		candidates = []string{"--help"}
+	} else {
+		// findSuggestions, which is what the root-level report goes
+		// through, sets this default before consulting SuggestionsFor;
+		// SuggestionsFor reads the distance as it finds it. Left at zero
+		// every Levenshtein candidate is silently lost — `lsit` stops
+		// suggesting `list` — and only prefix matches survive. Assigned
+		// rather than defaulted because nothing else in rdsh sets it.
+		cmd.SuggestionsMinimumDistance = 2
+		candidates = cmd.SuggestionsFor(arg)
+	}
+
+	var suggestions strings.Builder
+	if len(candidates) > 0 {
+		suggestions.WriteString("\n\nDid you mean this?\n")
+		for _, candidate := range candidates {
+			fmt.Fprintf(&suggestions, "\t%v\n", candidate)
+		}
+	}
+	// No usage listing after it, which is what gh's equivalent ends with:
+	// the root is SilenceUsage precisely because usage on every failure is
+	// noise for the agent consumer, and stopping here is also what the
+	// root-level report prints today.
+	return fmt.Errorf("unknown command %q for %q%s", arg, cmd.CommandPath(), suggestions.String())
 }
 
 // interruptSignals lists the signals Execute cancels the command context on
@@ -111,7 +190,8 @@ func Execute() int {
 		cancel()
 	}()
 
-	err := newRootCmd().ExecuteContext(ctx)
+	root, report := newRootCmd()
+	err := root.ExecuteContext(ctx)
 
 	// The signal is checked before the error is even looked at. A run the
 	// user stopped did not fail, whatever error unwound it — a cancelled
@@ -123,6 +203,13 @@ func Execute() int {
 	case sig := <-received:
 		return dieOfSignal(sig)
 	default:
+	}
+
+	// Only now, so an interrupt still wins: cobra returns nil for a stray
+	// argument the help function caught, and this is the one thing a nil
+	// return can still be hiding.
+	if err == nil {
+		err = report.err
 	}
 
 	if err != nil {
