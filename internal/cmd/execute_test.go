@@ -288,7 +288,7 @@ func TestExecuteOrdinaryFailureExitsOne(t *testing.T) {
 // merge both streams into one buffer, so that stdout stays empty — no URL
 // for a caller to read as a success — can only be checked out here.
 func TestExecuteCreatedButUnpublishedExitsOne(t *testing.T) {
-	f := &fakeServer{rejectPublish: true}
+	f := &fakeServer{rejectUpdate: true}
 	srv := f.start(t)
 
 	p := startRdsh(t, srv, "query", "create", "--name", "signups", "SELECT 1", "--data-source", "5")

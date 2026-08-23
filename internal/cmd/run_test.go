@@ -23,11 +23,16 @@ const (
 	pollRequest        = "poll"
 	cancelRequest      = "cancel"
 	dataSourcesRequest = "data sources"
-	publishRequest     = "publish"
+	updateRequest      = "update"
+	getQueryRequest    = "get query"
 )
 
-// savedQueryID is the ID the fake gives every query it is asked to save.
-const savedQueryID = 7
+// savedQueryID is the ID the fake gives every query it is asked to save,
+// and savedQueryVersion the version it serves for it.
+const (
+	savedQueryID      = 7
+	savedQueryVersion = 3
+)
 
 // fakeServer emulates just enough of Redash for the command layer: the
 // submit response already carries a finished (or never-finishing) job so
@@ -41,12 +46,17 @@ type fakeServer struct {
 	hangCancel    bool // DELETE /api/jobs/... never answers
 	hangList      bool // GET /api/data_sources never answers
 	hangCreate    bool // POST /api/queries never answers
-	rejectPublish bool // POST /api/queries/<id> returns 400
-	hangPublish   bool // POST /api/queries/<id> never answers
+	rejectUpdate  bool // POST /api/queries/<id> returns 400
+	hangUpdate    bool // POST /api/queries/<id> never answers
+	hangGet       bool // GET /api/queries/<id> never answers
+	conflict      bool // POST /api/queries/<id> returns 409
 	cancelled     bool
 	submitted     bool
+	fetched       bool           // GET /api/queries/<id> arrived
 	created       map[string]any // body of POST /api/queries
-	published     map[string]any // body of POST /api/queries/<id>
+	// updated is the body of POST /api/queries/<id>, which serves both
+	// create's publishing step and every query update.
+	updated map[string]any
 
 	reached chan string   // requests that arrived, for waitFor
 	release chan struct{} // closed on cleanup, freeing parked handlers
@@ -108,20 +118,37 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 		}
 		mustJSON(w, map[string]any{"id": savedQueryID, "is_draft": true})
 	})
-	mux.HandleFunc(fmt.Sprintf("POST /api/queries/%d", savedQueryID), func(w http.ResponseWriter, r *http.Request) {
-		f.reach(publishRequest)
+	mux.HandleFunc(fmt.Sprintf("GET /api/queries/%d", savedQueryID), func(w http.ResponseWriter, r *http.Request) {
+		f.reach(getQueryRequest)
 		f.mu.Lock()
-		if err := json.NewDecoder(r.Body).Decode(&f.published); err != nil {
+		f.fetched = true
+		f.mu.Unlock()
+		if f.hangGet {
+			f.park(r)
+			return
+		}
+		mustJSON(w, map[string]any{
+			"id": savedQueryID, "name": "saved", "query": "SELECT 1",
+			"data_source_id": 5, "is_draft": true, "version": savedQueryVersion,
+		})
+	})
+	mux.HandleFunc(fmt.Sprintf("POST /api/queries/%d", savedQueryID), func(w http.ResponseWriter, r *http.Request) {
+		f.reach(updateRequest)
+		f.mu.Lock()
+		if err := json.NewDecoder(r.Body).Decode(&f.updated); err != nil {
 			f.mu.Unlock()
 			return
 		}
 		f.mu.Unlock()
 		switch {
-		case f.hangPublish:
+		case f.hangUpdate:
 			f.park(r)
-		case f.rejectPublish:
+		case f.rejectUpdate:
 			w.WriteHeader(http.StatusBadRequest)
 			mustJSON(w, map[string]any{"message": "publishing is not allowed"})
+		case f.conflict:
+			w.WriteHeader(http.StatusConflict)
+			mustJSON(w, map[string]any{"message": "Query version conflict"})
 		default:
 			mustJSON(w, map[string]any{"id": savedQueryID, "is_draft": false})
 		}
