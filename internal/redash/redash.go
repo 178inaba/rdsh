@@ -124,7 +124,8 @@ type QueryListOptions struct {
 	Search string
 	// Mine lists only the caller's own queries.
 	Mine bool
-	// Limit caps how many queries are returned.
+	// Limit caps how many queries are returned. It must be at least 1;
+	// the server refuses the page size a smaller one would ask for.
 	Limit int
 }
 
@@ -303,10 +304,6 @@ const queryListPageSize = 100
 // count the server reports rather than by probing for an empty page:
 // Redash refuses a page past the end with 400 "Page is out of range".
 func (c *Client) ListQueries(ctx context.Context, opts QueryListOptions) ([]Query, int, error) {
-	if opts.Limit < 1 {
-		return nil, 0, fmt.Errorf("limit must be at least 1 (got %d)", opts.Limit)
-	}
-
 	path := "/api/queries"
 	if opts.Mine {
 		path = "/api/queries/my"

@@ -105,10 +105,6 @@ func cellString(v any) string {
 		return t
 	case json.Number:
 		return t.String()
-	case int:
-		// Result rows arrive as json.Number, but rows a command assembles
-		// itself — the saved-query listing's IDs — carry native values.
-		return strconv.Itoa(t)
 	case bool:
 		return strconv.FormatBool(t)
 	default:

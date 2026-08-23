@@ -290,9 +290,7 @@ func runRdshWithStdin(t *testing.T, ctx context.Context, stdin io.Reader, args .
 // an extra row.
 func runRdshSplit(t *testing.T, srv *httptest.Server, args ...string) (string, string, error) {
 	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("RDSH_URL", srv.URL)
-	t.Setenv("RDSH_API_KEY", "test-key")
+	setRdshEnv(t, t.TempDir(), srv)
 
 	var out, errOut bytes.Buffer
 	err := runRdshInto(t, context.Background(), strings.NewReader(""), &out, &errOut, args...)
