@@ -316,7 +316,7 @@ func runRdshSplit(t *testing.T, srv *httptest.Server, args ...string) (string, s
 // only ends the goroutine it runs on.
 func runRdshInto(t *testing.T, ctx context.Context, stdin io.Reader, out, errOut io.Writer, args ...string) error {
 	t.Helper()
-	root := newRootCmd()
+	root, report := newRootCmd()
 	root.SetOut(out)
 	root.SetErr(errOut)
 	root.SetIn(stdin)
@@ -333,6 +333,12 @@ func runRdshInto(t *testing.T, ctx context.Context, stdin io.Reader, out, errOut
 
 	select {
 	case err := <-done:
+		// The same merge Execute does, so a stray argument to a group
+		// command reaches a caller here as the error it is rather than as
+		// the nil cobra returns for it.
+		if err == nil {
+			err = report.err
+		}
 		return err
 	case <-timer.C:
 		t.Fatal("the command did not return")

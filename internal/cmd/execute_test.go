@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -326,5 +327,137 @@ func TestExecuteTruncatedListingExitsZero(t *testing.T) {
 	}
 	if len(lines) != 11 {
 		t.Errorf("stdout = %q, want the header and 10 rows with no note among them", p.stdout.String())
+	}
+}
+
+// TestExecuteMistypedSubcommandExitsOne covers what a group command does
+// with an argument that is not one of its subcommands. cobra answers that
+// by printing the group's help to stdout and returning nil — a success, on
+// the stream results are read from — because the `!Runnable()` branch of
+// Command.execute returns flag.ErrHelp before ValidateArgs is ever reached.
+// Only a process can show all three halves of the fix at once: the failure
+// becomes a non-zero exit, the report goes to stderr and is printed once,
+// and stdout stays empty.
+func TestExecuteMistypedSubcommandExitsOne(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want []string // every one of these appears in stderr
+	}{
+		{
+			name: "auth",
+			args: []string{"auth", "bogus"},
+			want: []string{`unknown command "bogus" for "rdsh auth"`},
+		},
+		{
+			name: "data-source",
+			args: []string{"data-source", "bogus"},
+			want: []string{`unknown command "bogus" for "rdsh data-source"`},
+		},
+		{
+			name: "profile",
+			args: []string{"profile", "bogus"},
+			want: []string{`unknown command "bogus" for "rdsh profile"`},
+		},
+		{
+			name: "query",
+			args: []string{"query", "bogus"},
+			want: []string{`unknown command "bogus" for "rdsh query"`},
+		},
+		{
+			// cobra generates this one during Execute, out of reach of
+			// every field rdsh's own constructors can set.
+			name: "completion",
+			args: []string{"completion", "bogus"},
+			want: []string{`unknown command "bogus" for "rdsh completion"`},
+		},
+		{
+			// bogus is too far from any subcommand to yield a candidate,
+			// so this is the only case that covers the suggestion list.
+			name: "near miss suggests the subcommand",
+			args: []string{"data-source", "lsit"},
+			want: []string{`unknown command "lsit"`, "Did you mean this?", "list"},
+		},
+		{
+			// help is a subcommand of the root alone, so under a group it
+			// is as stray as any other argument — with the flag as the
+			// candidate no subcommand list could offer.
+			name: "help under auth",
+			args: []string{"auth", "help"},
+			want: []string{`unknown command "help" for "rdsh auth"`, "--help"},
+		},
+		{
+			name: "help under data-source",
+			args: []string{"data-source", "help"},
+			want: []string{`unknown command "help" for "rdsh data-source"`, "--help"},
+		},
+		{
+			name: "help under profile",
+			args: []string{"profile", "help"},
+			want: []string{`unknown command "help" for "rdsh profile"`, "--help"},
+		},
+		{
+			name: "help under completion",
+			args: []string{"completion", "help"},
+			want: []string{`unknown command "help" for "rdsh completion"`, "--help"},
+		},
+		{
+			// The root already reported this one; it must keep doing so.
+			name: "root",
+			args: []string{"bogus"},
+			want: []string{`unknown command "bogus" for "rdsh"`},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// None of these resolves a connection, but startRdsh builds
+			// the environment from a server either way.
+			srv := (&fakeServer{}).start(t)
+
+			p := startRdsh(t, srv, tt.args...)
+			errOut := p.assertExited(t, 1)
+			for _, want := range tt.want {
+				if !strings.Contains(errOut, want) {
+					t.Errorf("stderr = %q, want it to carry %s", errOut, want)
+				}
+			}
+			if got := strings.Count(errOut, "Error:"); got != 1 {
+				t.Errorf("stderr = %q, want exactly one report, got %d", errOut, got)
+			}
+			if out := p.stdout.String(); out != "" {
+				t.Errorf("stdout = %q, want nothing a caller could parse as a result", out)
+			}
+		})
+	}
+}
+
+// TestExecuteGroupWithoutArgumentsExitsZero pins the other side of the
+// same override: help that was actually asked for still goes to stdout and
+// still succeeds, whether it was asked for by naming a group alone or with
+// --help.
+func TestExecuteGroupWithoutArgumentsExitsZero(t *testing.T) {
+	groups := [][]string{
+		{}, {"auth"}, {"data-source"}, {"profile"}, {"query"}, {"completion"},
+	}
+
+	for _, group := range groups {
+		name := "rdsh"
+		if len(group) > 0 {
+			name += " " + group[0]
+		}
+		for _, args := range [][]string{group, append(slices.Clone(group), "--help")} {
+			t.Run(strings.Join(append([]string{name}, args[len(group):]...), " "), func(t *testing.T) {
+				srv := (&fakeServer{}).start(t)
+
+				p := startRdsh(t, srv, args...)
+				if errOut := p.assertExited(t, 0); errOut != "" {
+					t.Errorf("stderr = %q, want no failure report", errOut)
+				}
+				if !strings.Contains(p.stdout.String(), "Usage:") {
+					t.Errorf("stdout = %q, want the help", p.stdout.String())
+				}
+			})
+		}
 	}
 }
