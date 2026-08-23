@@ -75,6 +75,34 @@ func TestWriteJSON(t *testing.T) {
 	}
 }
 
+// TestWriteNativeCellValues covers the rows a command assembles itself
+// rather than decoding from a result: their cells carry native Go values,
+// which must render as the same scalars a decoded row would.
+func TestWriteNativeCellValues(t *testing.T) {
+	res := &redash.QueryResult{
+		Columns: []redash.Column{{Name: "id"}, {Name: "is_draft"}},
+		Rows:    []map[string]any{{"id": 7, "is_draft": true}},
+	}
+
+	var buf bytes.Buffer
+	if err := format.Write(&buf, format.CSV, res); err != nil {
+		t.Fatalf("Write(csv) error = %v", err)
+	}
+	if want := "id,is_draft\n7,true\n"; buf.String() != want {
+		t.Errorf("Write(csv) = %q, want %q", buf.String(), want)
+	}
+
+	buf.Reset()
+	if err := format.Write(&buf, format.JSON, res); err != nil {
+		t.Fatalf("Write(json) error = %v", err)
+	}
+	// A number and a boolean rather than the strings the CSV rendering
+	// produces: an agent branching on is_draft would have to unquote them.
+	if want := `[{"id":7,"is_draft":true}]`; strings.TrimSpace(buf.String()) != want {
+		t.Errorf("Write(json) = %q, want %q", buf.String(), want)
+	}
+}
+
 // A Format converted from an arbitrary string bypasses Set, so Write keeps
 // its own guard rather than trusting the type.
 func TestWriteUnknownFormat(t *testing.T) {

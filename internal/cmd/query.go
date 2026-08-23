@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/178inaba/rdsh/internal/format"
 	"github.com/178inaba/rdsh/internal/redash"
 )
 
@@ -29,7 +30,7 @@ func newQueryCmd(g *globalFlags) *cobra.Command {
 			return cmd.Help()
 		},
 	}
-	cmd.AddCommand(newQueryCreateCmd(g), newQueryUpdateCmd(g))
+	cmd.AddCommand(newQueryCreateCmd(g), newQueryUpdateCmd(g), newQueryListCmd(g))
 	return cmd
 }
 
@@ -262,6 +263,123 @@ func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 
 	fmt.Fprintln(cmd.OutOrStdout(), client.QueryURL(id))
 	return nil
+}
+
+// defaultQueryListLimit caps the listing unless --limit says otherwise. It
+// is the same 30 gh uses: enough to find a query by eye, short enough that
+// an agent reading stdout is not handed an unbounded page.
+const defaultQueryListLimit = 30
+
+func newQueryListCmd(g *globalFlags) *cobra.Command {
+	var (
+		mine         bool
+		limit        int
+		outputFormat = format.CSV
+		timeout      time.Duration
+	)
+	cmd := &cobra.Command{
+		Use:   "list [search]",
+		Short: "List saved Redash queries and their IDs",
+		Long: `List saved Redash queries and their IDs.
+
+The columns are the query's ID, its name, whether it is still a draft, and
+its URL. The ID is what a Query Results data source needs for a ` + "`query_<id>`" + `
+reference, and what ` + "`rdsh query update`" + ` takes.
+
+Without an argument the queries you can see are listed newest first. The
+argument is a full-text search, which the server answers in its own
+relevance order rather than by age.
+
+Only the first 30 are printed unless --limit says otherwise; when there are
+more, a note saying so goes to stderr, leaving stdout to the rows alone.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runQueryList(cmd, args, g, mine, limit, outputFormat, timeout)
+		},
+	}
+	cmd.Flags().BoolVar(&mine, "mine", false, "list only the queries you created")
+	cmd.Flags().IntVar(&limit, "limit", defaultQueryListLimit, "maximum number of queries to print")
+	cmd.Flags().Var(&outputFormat, "format", "output format: csv, tsv, or json")
+	cmd.Flags().DurationVar(&timeout, "timeout", defaultTimeout, "give up on the server after this duration (0 = no limit)")
+	return cmd
+}
+
+func runQueryList(cmd *cobra.Command, args []string, g *globalFlags, mine bool, limit int,
+	outputFormat format.Format, timeout time.Duration) error {
+	if timeout < 0 {
+		return fmt.Errorf("--timeout must not be negative (got %s)", timeout)
+	}
+	// Checked here as well as in the client so the message names the flag
+	// the caller actually passed, and so nothing is sent: the server would
+	// refuse the resulting page_size anyway.
+	if limit < 1 {
+		return fmt.Errorf("--limit must be at least 1 (got %d)", limit)
+	}
+
+	// An empty argument counts as no search, the way an empty one counts as
+	// no SQL in run and create. Listing everything is what the server does
+	// with an empty q in any case, and nothing is lost by it.
+	search := ""
+	if len(args) == 1 {
+		search = args[0]
+	}
+
+	conn, err := resolveConnection(g.profile)
+	if err != nil {
+		return err
+	}
+	client := redash.NewClient(conn.URL, conn.APIKey)
+
+	ctx := cmd.Context()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	// A listing reads nothing into existence, so a deadline that cuts it off
+	// leaves the server as it was and re-running is safe — which is what
+	// exit code 124 tells an agent to do.
+	queries, total, err := client.ListQueries(ctx, redash.QueryListOptions{
+		Search: search,
+		Mine:   mine,
+		Limit:  limit,
+	})
+	if err != nil {
+		return timeoutOr(err, timeout)
+	}
+
+	if err := format.Write(cmd.OutOrStdout(), outputFormat, queryListResult(client, queries)); err != nil {
+		return err
+	}
+	if total > len(queries) {
+		// A note rather than a failure: the rows are what was asked for. It
+		// goes to stderr so stdout stays parseable as the listing alone.
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"showing %d of %d matching queries; raise --limit or narrow the search to see the rest\n",
+			len(queries), total)
+	}
+	return nil
+}
+
+// queryListResult shapes the listing as the row set internal/format
+// renders, so list shares one output contract with run rather than growing
+// a second renderer. The URL is built by the client, which is also what
+// reads one back, so the two directions cannot drift apart.
+func queryListResult(client *redash.Client, queries []redash.Query) *redash.QueryResult {
+	result := &redash.QueryResult{
+		Columns: []redash.Column{{Name: "id"}, {Name: "name"}, {Name: "is_draft"}, {Name: "url"}},
+		Rows:    make([]map[string]any, len(queries)),
+	}
+	for i, q := range queries {
+		result.Rows[i] = map[string]any{
+			"id":       q.ID,
+			"name":     q.Name,
+			"is_draft": q.IsDraft,
+			"url":      client.QueryURL(q.ID),
+		}
+	}
+	return result
 }
 
 // resolveQueryID reads the <id|url> argument the saved-query commands take:

@@ -284,9 +284,9 @@ func TestExecuteOrdinaryFailureExitsOne(t *testing.T) {
 
 // TestExecuteCreatedButUnpublishedExitsOne covers the one place the exit
 // code contract bends: a create that saved the query but could not publish
-// it exits 1, not 124, and says where the draft is. The in-process helpers
-// merge both streams into one buffer, so that stdout stays empty — no URL
-// for a caller to read as a success — can only be checked out here.
+// it exits 1, not 124, and says where the draft is. Execute prints that
+// report itself, on the process's own stderr, so that stdout stays empty —
+// no URL for a caller to read as a success — can only be checked out here.
 func TestExecuteCreatedButUnpublishedExitsOne(t *testing.T) {
 	f := &fakeServer{rejectUpdate: true}
 	srv := f.start(t)
@@ -299,5 +299,32 @@ func TestExecuteCreatedButUnpublishedExitsOne(t *testing.T) {
 	}
 	if out := p.stdout.String(); out != "" {
 		t.Errorf("stdout = %q, want nothing a caller could read as the created URL", out)
+	}
+}
+
+// TestExecuteTruncatedListingExitsZero covers the listing's split of duties
+// between the streams. A truncated listing is not a failure — the rows are
+// what was asked for — so it exits 0, and the note about the rest goes to
+// stderr, leaving stdout parseable as the listing alone. The in-process
+// helper's streams are cobra's; that these are the process's own can only
+// be checked out here.
+func TestExecuteTruncatedListingExitsZero(t *testing.T) {
+	f := &fakeServer{savedQueries: 45}
+	srv := f.start(t)
+
+	p := startRdsh(t, srv, "query", "list", "--limit", "10")
+	errOut := p.assertExited(t, 0)
+	for _, want := range []string{"10", "45"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("stderr = %q, want the truncation note to carry %s", errOut, want)
+		}
+	}
+
+	lines := strings.Split(strings.TrimSuffix(p.stdout.String(), "\n"), "\n")
+	if want := wantListHeader; lines[0] != want {
+		t.Errorf("stdout header = %q, want %q", lines[0], want)
+	}
+	if len(lines) != 11 {
+		t.Errorf("stdout = %q, want the header and 10 rows with no note among them", p.stdout.String())
 	}
 }

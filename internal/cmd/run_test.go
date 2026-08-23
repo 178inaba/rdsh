@@ -9,8 +9,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +27,7 @@ const (
 	dataSourcesRequest = "data sources"
 	updateRequest      = "update"
 	getQueryRequest    = "get query"
+	listQueriesRequest = "list queries"
 )
 
 // savedQueryID is the ID the fake gives every query it is asked to save,
@@ -40,20 +43,25 @@ const (
 // an endpoint never answer, standing in for a wedged Redash; they are set
 // before start and never written afterwards.
 type fakeServer struct {
-	mu            sync.Mutex
-	neverDone     bool // job stays PENDING forever; used by timeout tests
-	rejectSession bool // GET /api/session returns 401; used by login tests
-	hangCancel    bool // DELETE /api/jobs/... never answers
-	hangList      bool // GET /api/data_sources never answers
-	hangCreate    bool // POST /api/queries never answers
-	rejectUpdate  bool // POST /api/queries/<id> returns 400
-	hangUpdate    bool // POST /api/queries/<id> never answers
-	hangGet       bool // GET /api/queries/<id> never answers
-	conflict      bool // POST /api/queries/<id> returns 409
-	cancelled     bool
-	submitted     bool
-	fetched       bool           // GET /api/queries/<id> arrived
-	created       map[string]any // body of POST /api/queries
+	mu              sync.Mutex
+	neverDone       bool // job stays PENDING forever; used by timeout tests
+	rejectSession   bool // GET /api/session returns 401; used by login tests
+	hangCancel      bool // DELETE /api/jobs/... never answers
+	hangList        bool // GET /api/data_sources never answers
+	hangCreate      bool // POST /api/queries never answers
+	rejectUpdate    bool // POST /api/queries/<id> returns 400
+	hangUpdate      bool // POST /api/queries/<id> never answers
+	hangGet         bool // GET /api/queries/<id> never answers
+	conflict        bool // POST /api/queries/<id> returns 409
+	hangListQueries bool // GET /api/queries never answers
+	savedQueries    int  // queries the listing endpoints hold
+	cancelled       bool
+	submitted       bool
+	fetched         bool           // GET /api/queries/<id> arrived
+	created         map[string]any // body of POST /api/queries
+	// listed is the query string of every listing request that arrived, in
+	// order, so a test can check both the endpoint and how it was called.
+	listed []*url.URL
 	// updated is the body of POST /api/queries/<id>, which serves both
 	// create's publishing step and every query update.
 	updated map[string]any
@@ -153,6 +161,8 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 			mustJSON(w, map[string]any{"id": savedQueryID, "is_draft": false})
 		}
 	})
+	mux.HandleFunc("GET /api/queries", f.handleQueryList)
+	mux.HandleFunc("GET /api/queries/my", f.handleQueryList)
 	mux.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		reject := f.rejectSession
@@ -170,6 +180,34 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 	// and Close waits for the very handlers this releases.
 	t.Cleanup(func() { close(f.release) })
 	return srv
+}
+
+// handleQueryList serves both listing endpoints with savedQueries rows,
+// paginated the way the real ones are. The redash package's own fake is
+// where the walk's edge cases are pinned; this one only has to be faithful
+// enough for the command layer's columns, flags and limit.
+func (f *fakeServer) handleQueryList(w http.ResponseWriter, r *http.Request) {
+	f.reach(listQueriesRequest)
+	f.mu.Lock()
+	f.listed = append(f.listed, r.URL)
+	f.mu.Unlock()
+	if f.hangListQueries {
+		f.park(r)
+		return
+	}
+
+	values := r.URL.Query()
+	page, _ := strconv.Atoi(values.Get("page"))
+	pageSize, _ := strconv.Atoi(values.Get("page_size"))
+	results := []map[string]any{}
+	for i := (page - 1) * pageSize; i < f.savedQueries && len(results) < pageSize; i++ {
+		results = append(results, map[string]any{
+			"id": i + 1, "name": fmt.Sprintf("query %d", i+1), "is_draft": i%2 == 0,
+		})
+	}
+	mustJSON(w, map[string]any{
+		"count": f.savedQueries, "page": page, "page_size": pageSize, "results": results,
+	})
 }
 
 // park holds a request until the test's cleanup releases it or the client
@@ -238,18 +276,39 @@ const commandReturnTimeout = 10 * time.Second
 // runRdshWithStdin is runRdshWithEnvSet with an explicit context and an
 // io.Reader stdin, so a test can cancel a command mid-prompt or hand it a
 // real *os.File. Both streams share one buffer, so a test that cares which
-// one produced the text has to assert the whole of it.
-//
-// The command runs in a goroutine because an interrupted prompt is supposed
-// to return on its own; called directly, a run that did not would hang the
-// package until the test binary panics. Nothing may call t.Fatal from that
-// goroutine — it only ends the goroutine it runs on.
+// one produced the text has to assert the whole of it, or use runRdshSplit.
 func runRdshWithStdin(t *testing.T, ctx context.Context, stdin io.Reader, args ...string) (string, error) {
 	t.Helper()
-	root := newRootCmd()
 	var out bytes.Buffer
-	root.SetOut(&out)
-	root.SetErr(&out)
+	err := runRdshInto(t, ctx, stdin, &out, &out, args...)
+	return out.String(), err
+}
+
+// runRdshSplit is runRdsh with the two output streams kept apart. The
+// listing is the one command that writes to both — rows to stdout, the
+// truncation note to stderr — and a shared buffer would count the note as
+// an extra row.
+func runRdshSplit(t *testing.T, srv *httptest.Server, args ...string) (string, string, error) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("RDSH_URL", srv.URL)
+	t.Setenv("RDSH_API_KEY", "test-key")
+
+	var out, errOut bytes.Buffer
+	err := runRdshInto(t, context.Background(), strings.NewReader(""), &out, &errOut, args...)
+	return out.String(), errOut.String(), err
+}
+
+// runRdshInto executes the root command with the given streams. The command
+// runs in a goroutine because an interrupted prompt is supposed to return on
+// its own; called directly, a run that did not would hang the package until
+// the test binary panics. Nothing may call t.Fatal from that goroutine — it
+// only ends the goroutine it runs on.
+func runRdshInto(t *testing.T, ctx context.Context, stdin io.Reader, out, errOut io.Writer, args ...string) error {
+	t.Helper()
+	root := newRootCmd()
+	root.SetOut(out)
+	root.SetErr(errOut)
 	root.SetIn(stdin)
 	root.SetArgs(args)
 
@@ -264,10 +323,10 @@ func runRdshWithStdin(t *testing.T, ctx context.Context, stdin io.Reader, args .
 
 	select {
 	case err := <-done:
-		return out.String(), err
+		return err
 	case <-timer.C:
 		t.Fatal("the command did not return")
-		return "", nil // unreachable: t.Fatal ends this goroutine
+		return nil // unreachable: t.Fatal ends this goroutine
 	}
 }
 
