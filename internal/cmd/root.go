@@ -110,13 +110,12 @@ func unknownSubcommandError(cmd *cobra.Command, arg string) error {
 		candidates = []string{"--help"}
 	} else {
 		// findSuggestions, which is what the root-level report goes
-		// through, defaults this before consulting SuggestionsFor;
-		// SuggestionsFor does not default it itself. Without the line
+		// through, sets this default before consulting SuggestionsFor;
+		// SuggestionsFor reads the distance as it finds it. Left at zero
 		// every Levenshtein candidate is silently lost — `lsit` stops
-		// suggesting `list` — and only prefix matches survive.
-		if cmd.SuggestionsMinimumDistance <= 0 {
-			cmd.SuggestionsMinimumDistance = 2
-		}
+		// suggesting `list` — and only prefix matches survive. Assigned
+		// rather than defaulted because nothing else in rdsh sets it.
+		cmd.SuggestionsMinimumDistance = 2
 		candidates = cmd.SuggestionsFor(arg)
 	}
 

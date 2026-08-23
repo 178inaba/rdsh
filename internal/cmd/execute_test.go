@@ -330,126 +330,92 @@ func TestExecuteTruncatedListingExitsZero(t *testing.T) {
 	}
 }
 
+// groupCommands are the commands that hold subcommands and run nothing
+// themselves — the ones cobra answers a stray argument for by printing help
+// to stdout and exiting 0. completion is cobra's own, generated inside
+// Execute and out of reach of every field rdsh's constructors set.
+var groupCommands = []string{"auth", "data-source", "profile", "query", "completion"}
+
+// assertReportedOnce checks the three halves of a rejected invocation that
+// an exit code alone cannot show: the report reached stderr, it carries
+// what it should, and stdout stayed empty for a caller parsing it.
+func (p *rdshProcess) assertReportedOnce(t *testing.T, want ...string) {
+	t.Helper()
+	errOut := p.assertExited(t, 1)
+	for _, w := range want {
+		if !strings.Contains(errOut, w) {
+			t.Errorf("stderr = %q, want it to carry %s", errOut, w)
+		}
+	}
+	if got := strings.Count(errOut, "Error:"); got != 1 {
+		t.Errorf("stderr = %q, want exactly one report, got %d", errOut, got)
+	}
+	if out := p.stdout.String(); out != "" {
+		t.Errorf("stdout = %q, want nothing a caller could parse as a result", out)
+	}
+}
+
 // TestExecuteMistypedSubcommandExitsOne covers what a group command does
 // with an argument that is not one of its subcommands. cobra answers that
 // by printing the group's help to stdout and returning nil — a success, on
 // the stream results are read from — because the `!Runnable()` branch of
 // Command.execute returns flag.ErrHelp before ValidateArgs is ever reached.
-// Only a process can show all three halves of the fix at once: the failure
-// becomes a non-zero exit, the report goes to stderr and is printed once,
-// and stdout stays empty.
+// Only a process can show all three halves of the fix at once, which is
+// what puts these here rather than beside the in-process helpers.
+//
+// One server for the whole test: none of these resolves a connection, and
+// startRdsh only reads its URL to build the child's environment.
 func TestExecuteMistypedSubcommandExitsOne(t *testing.T) {
-	tests := []struct {
-		name string
-		args []string
-		want []string // every one of these appears in stderr
-	}{
-		{
-			name: "auth",
-			args: []string{"auth", "bogus"},
-			want: []string{`unknown command "bogus" for "rdsh auth"`},
-		},
-		{
-			name: "data-source",
-			args: []string{"data-source", "bogus"},
-			want: []string{`unknown command "bogus" for "rdsh data-source"`},
-		},
-		{
-			name: "profile",
-			args: []string{"profile", "bogus"},
-			want: []string{`unknown command "bogus" for "rdsh profile"`},
-		},
-		{
-			name: "query",
-			args: []string{"query", "bogus"},
-			want: []string{`unknown command "bogus" for "rdsh query"`},
-		},
-		{
-			// cobra generates this one during Execute, out of reach of
-			// every field rdsh's own constructors can set.
-			name: "completion",
-			args: []string{"completion", "bogus"},
-			want: []string{`unknown command "bogus" for "rdsh completion"`},
-		},
-		{
-			// bogus is too far from any subcommand to yield a candidate,
-			// so this is the only case that covers the suggestion list.
-			name: "near miss suggests the subcommand",
-			args: []string{"data-source", "lsit"},
-			want: []string{`unknown command "lsit"`, "Did you mean this?", "list"},
-		},
-		{
-			// help is a subcommand of the root alone, so under a group it
-			// is as stray as any other argument — with the flag as the
-			// candidate no subcommand list could offer.
-			name: "help under auth",
-			args: []string{"auth", "help"},
-			want: []string{`unknown command "help" for "rdsh auth"`, "--help"},
-		},
-		{
-			name: "help under data-source",
-			args: []string{"data-source", "help"},
-			want: []string{`unknown command "help" for "rdsh data-source"`, "--help"},
-		},
-		{
-			name: "help under profile",
-			args: []string{"profile", "help"},
-			want: []string{`unknown command "help" for "rdsh profile"`, "--help"},
-		},
-		{
-			name: "help under completion",
-			args: []string{"completion", "help"},
-			want: []string{`unknown command "help" for "rdsh completion"`, "--help"},
-		},
-		{
-			// The root already reported this one; it must keep doing so.
-			name: "root",
-			args: []string{"bogus"},
-			want: []string{`unknown command "bogus" for "rdsh"`},
-		},
+	srv := (&fakeServer{}).start(t)
+
+	for _, group := range groupCommands {
+		t.Run(group, func(t *testing.T) {
+			p := startRdsh(t, srv, group, "bogus")
+			p.assertReportedOnce(t, `unknown command "bogus" for "rdsh `+group+`"`)
+		})
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// None of these resolves a connection, but startRdsh builds
-			// the environment from a server either way.
-			srv := (&fakeServer{}).start(t)
+	// bogus is too far from any subcommand name to be offered a candidate,
+	// so the table above never reaches the suggestion list. A real typo is
+	// what exercises it.
+	t.Run("near miss suggests the subcommand", func(t *testing.T) {
+		p := startRdsh(t, srv, "data-source", "lsit")
+		p.assertReportedOnce(t, `unknown command "lsit" for "rdsh data-source"`, "Did you mean this?", "list")
+	})
 
-			p := startRdsh(t, srv, tt.args...)
-			errOut := p.assertExited(t, 1)
-			for _, want := range tt.want {
-				if !strings.Contains(errOut, want) {
-					t.Errorf("stderr = %q, want it to carry %s", errOut, want)
-				}
-			}
-			if got := strings.Count(errOut, "Error:"); got != 1 {
-				t.Errorf("stderr = %q, want exactly one report, got %d", errOut, got)
-			}
-			if out := p.stdout.String(); out != "" {
-				t.Errorf("stdout = %q, want nothing a caller could parse as a result", out)
-			}
+	// The root already reported this one; it has to keep doing so.
+	t.Run("root", func(t *testing.T) {
+		p := startRdsh(t, srv, "bogus")
+		p.assertReportedOnce(t, `unknown command "bogus" for "rdsh"`)
+	})
+}
+
+// TestExecuteHelpUnderGroupExitsOne covers the argument no subcommand list
+// can answer: cobra registers a help command on the root alone, so under a
+// group `help` is as stray as anything else, and the flag is what the
+// caller meant.
+func TestExecuteHelpUnderGroupExitsOne(t *testing.T) {
+	srv := (&fakeServer{}).start(t)
+
+	for _, group := range groupCommands {
+		t.Run(group, func(t *testing.T) {
+			p := startRdsh(t, srv, group, "help")
+			p.assertReportedOnce(t, `unknown command "help" for "rdsh `+group+`"`, "--help")
 		})
 	}
 }
 
-// TestExecuteGroupWithoutArgumentsExitsZero pins the other side of the
-// same override: help that was actually asked for still goes to stdout and
-// still succeeds, whether it was asked for by naming a group alone or with
-// --help.
+// TestExecuteGroupWithoutArgumentsExitsZero pins the other side of the same
+// override: help that was actually asked for still goes to stdout and still
+// succeeds, whether it was asked for by naming a group alone or with --help.
 func TestExecuteGroupWithoutArgumentsExitsZero(t *testing.T) {
-	groups := [][]string{
-		{}, {"auth"}, {"data-source"}, {"profile"}, {"query"}, {"completion"},
-	}
+	srv := (&fakeServer{}).start(t)
 
-	for _, group := range groups {
-		name := "rdsh"
-		if len(group) > 0 {
-			name += " " + group[0]
-		}
-		for _, args := range [][]string{group, append(slices.Clone(group), "--help")} {
-			t.Run(strings.Join(append([]string{name}, args[len(group):]...), " "), func(t *testing.T) {
-				srv := (&fakeServer{}).start(t)
-
+	// The empty name is the root, which reaches the override the same way.
+	for _, group := range append([]string{""}, groupCommands...) {
+		for _, flag := range []string{"", "--help"} {
+			args := slices.DeleteFunc([]string{group, flag}, func(a string) bool { return a == "" })
+			t.Run("rdsh "+strings.Join(args, " "), func(t *testing.T) {
 				p := startRdsh(t, srv, args...)
 				if errOut := p.assertExited(t, 0); errOut != "" {
 					t.Errorf("stderr = %q, want no failure report", errOut)
