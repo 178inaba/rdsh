@@ -891,8 +891,13 @@ func TestQueryShowAnotherInstance(t *testing.T) {
 // than the array of rows the other commands print, carrying the metadata
 // the SQL alone cannot. The SQL keeps the > that the encoder escapes,
 // which is what the rest of the package's JSON output does too.
+//
+// It is also the SQL exactly as stored, trailing newline and all: the
+// normalisation the default output does exists so that a redirect produces
+// the same file either way, and applying it here would hand back something
+// other than what Redash holds.
 func TestQueryShowJSON(t *testing.T) {
-	const sql = "SELECT 1 WHERE 2 > 1"
+	const sql = "SELECT 1 WHERE 2 > 1\n"
 	f := &fakeServer{savedQuerySQL: sql}
 	srv := f.start(t)
 
