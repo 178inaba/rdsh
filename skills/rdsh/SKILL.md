@@ -35,11 +35,17 @@ To hand someone a Redash URL, run the SQL with `rdsh run` first, then save it wi
 
 New queries are published, so they appear in colleagues' query lists — that is what sharing needs. Pass `--draft` for queries that exist only to be referenced (Query Results parts), so they stay out of everyone else's list; a draft is still reachable by URL and still usable as `query_<id>`.
 
+## Finding a saved query
+
+When a query's ID is needed and only its name is known — or nothing is known — use `rdsh query list`. This is the way to reach a query saved in an earlier session or by someone else; a URL that was printed once is not a lookup mechanism. The optional argument is a full-text search, `--mine` narrows to the caller's own queries, and the `id` column is what `query_<id>` and `rdsh query update` take.
+
+Drafts are visible in this listing only to the user who saved them, so a query someone else left as a draft will not appear even though its URL works. If stderr says the listing was truncated, narrow the search or raise `--limit` rather than treating the first rows as the whole answer.
+
 To change a saved query afterwards — fix the SQL, rename it, flip it between published and draft — use `rdsh query update` on its ID or URL rather than saving a second query; the URL already handed out keeps working. It refuses an invocation with nothing to change, and — unlike `rdsh run` and `rdsh query create` — it never reads stdin, so pipe nothing into it. If it reports that the query changed on the server, someone edited it in the Redash UI in the meantime: read the query again and compose the update from what is there now — re-running the same command unchanged will keep failing.
 
 ## Timeouts and exit codes
 
-- The 90 s default timeout suits synchronous runs. Exit code 124 means the query timed out (the server-side job is cancelled best-effort): re-run with a longer `--timeout` (e.g. `10m`) in a background shell. `--timeout 0` (unlimited) is for background runs only.
+- `rdsh run` and the `rdsh query` subcommands take `--timeout`, defaulting to 90 s, which suits synchronous runs. Exit code 124 means the deadline expired (on `rdsh run`, the server-side job is cancelled best-effort): re-run with a longer `--timeout` (e.g. `10m`) in a background shell. `--timeout 0` (unlimited) is for background runs only.
 - A `rdsh query create` that saved the query but failed to publish it exits 1, not 124 — including when a `--timeout` expiry is what stopped the publish. Its stderr carries the query's URL: the query exists as a draft, so do not re-run the command, which would save a second one.
 - Any other failure exits 1. Read stderr before acting: a SQL error means fix the query; an auth, network, or configuration error means fix the environment or stop and report. Neither is solved by retrying with a longer timeout.
 - An interrupt (Ctrl-C or `SIGTERM`) is not a failure and prints nothing: rdsh terminates by the signal, which a shell reports as 130 or 143. Do not retry — someone asked the run to stop.
@@ -52,4 +58,4 @@ To change a saved query afterwards — fix the SQL, rename it, flip it between p
 
 ## Output
 
-`--format json` (an array of row objects) for machine processing; `csv` or `tsv` when column order matters (JSON rows carry no column order) — prefer `tsv` when cell values may contain commas.
+`--format json` (an array of row objects) for machine processing; `csv` or `tsv` when column order matters (JSON rows carry no column order) — prefer `tsv` when cell values may contain commas. `rdsh query list` shares the same flag and defaults, so query names containing commas are a reason to pick `tsv` there too.
