@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/178inaba/rdsh/internal/config"
 )
@@ -476,5 +477,81 @@ func TestDataSourceListUnlimitedTimeout(t *testing.T) {
 	}
 	if want := "7\twarehouse\n"; out != want {
 		t.Errorf("output = %q, want %q", out, want)
+	}
+}
+
+// TestAuthLoginVerificationTimeout covers a server that takes the
+// connection and never answers the verification. Nothing is saved: the run
+// ends at the deadline instead of hanging on a request no signal but the
+// user's own could end.
+func TestAuthLoginVerificationTimeout(t *testing.T) {
+	f := &fakeServer{hangSession: true}
+	srv := f.start(t)
+	dir := t.TempDir()
+
+	stdin := fmt.Sprintf("%s\nsecret-key\nstaging\n3\n", srv.URL)
+	_, err := runRdshIn(t, dir, nil, stdin, "auth", "login", "--timeout", "50ms")
+	if !errors.Is(err, errTimeout) {
+		t.Fatalf("error = %v, want errTimeout", err)
+	}
+	if got := exitCode(err); got != timeoutExitCode {
+		t.Errorf("exitCode(%v) = %d, want %d", err, got, timeoutExitCode)
+	}
+	assertConfigUnchanged(t, nil)
+}
+
+// slowStdin answers the prompts in order, pausing before the reads named in
+// delayed so that their answers arrive well after --timeout would have
+// expired. A prompt bounded by the verification's deadline would abort
+// there rather than wait.
+type slowStdin struct {
+	answers []string // each ends with "\n"
+	delayed map[int]time.Duration
+
+	reads int
+}
+
+func (s *slowStdin) Read(p []byte) (int, error) {
+	read := s.reads
+	s.reads++
+	if delay, ok := s.delayed[read]; ok {
+		time.Sleep(delay)
+	}
+	if read < len(s.answers) {
+		return copy(p, s.answers[read]), nil
+	}
+	return 0, io.EOF
+}
+
+// TestAuthLoginPromptsOutliveTheTimeout pins that --timeout bounds the
+// verification alone. The prompt before it would fail if the whole run were
+// bounded, and the one after it if the derived context replaced the
+// command's own; both take twice the deadline to answer, and the login must
+// still save the profile.
+func TestAuthLoginPromptsOutliveTheTimeout(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+	dir := t.TempDir()
+	setRdshEnv(t, dir, nil)
+
+	const timeout = 200 * time.Millisecond
+	stdin := &slowStdin{
+		answers: authLoginAnswers(srv.URL),
+		// The profile name prompt, which runs before the verification, and
+		// the data source prompt, which runs after it.
+		delayed: map[int]time.Duration{2: 2 * timeout, 3: 2 * timeout},
+	}
+
+	out, err := runRdshWithStdin(t, context.Background(), stdin, "auth", "login", "--timeout", timeout.String())
+	if err != nil {
+		t.Fatalf("auth login error = %v (output: %s)", err, out)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if _, ok := cfg.Profiles["staging"]; !ok {
+		t.Errorf("profiles = %v, want the answered profile saved", cfg.Profiles)
 	}
 }

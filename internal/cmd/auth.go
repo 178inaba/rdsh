@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -26,7 +27,8 @@ func newAuthCmd() *cobra.Command {
 }
 
 func newAuthLoginCmd() *cobra.Command {
-	return &cobra.Command{
+	var timeout timeoutFlag
+	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Register a Redash user API key as a named profile",
 		Long: `Register a Redash user API key as a named profile.
@@ -34,19 +36,23 @@ func newAuthLoginCmd() *cobra.Command {
 The URL and key are verified against the server before anything is saved.
 Redash has no browser OAuth flow, so key registration is the only method.`,
 		Args: cobra.NoArgs,
-		RunE: runAuthLogin,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runAuthLogin(cmd, timeout.Duration())
+		},
 	}
+	addTimeoutFlag(cmd, &timeout, "give up on verifying the URL and key after this duration (0 = no limit)")
+	return cmd
 }
 
-func runAuthLogin(cmd *cobra.Command, _ []string) error {
+func runAuthLogin(cmd *cobra.Command, timeout time.Duration) error {
 	in := cmd.InOrStdin()
 	errOut := cmd.ErrOrStderr()
 
 	// The signal context, so a prompt gives up on Ctrl-C rather than waiting
-	// for a keystroke the user is no longer going to type. auth login takes
-	// no globalFlags and builds its own client, so there is no
-	// --timeout-derived context here that the prompts could pick up by
-	// mistake.
+	// for a keystroke the user is no longer going to type. --timeout is
+	// derived from it around the verification alone and nowhere else: a
+	// prompt that inherited that deadline would abandon a user who was still
+	// typing, which is not what the flag is for.
 	ctx := cmd.Context()
 
 	// The masked key prompt needs a real terminal. Non-TTY callers (agents,
@@ -88,8 +94,15 @@ func runAuthLogin(cmd *cobra.Command, _ []string) error {
 	}
 
 	client := redash.NewClient(url, key)
-	if err := client.GetSession(ctx); err != nil {
-		return fmt.Errorf("verification failed, nothing saved: %w", err)
+
+	// Cancelled here rather than deferred: the data source prompt and the
+	// config write below it are the rest of this function, and neither is
+	// what --timeout bounds.
+	verifyCtx, cancel := withTimeout(ctx, timeout)
+	err = client.GetSession(verifyCtx)
+	cancel()
+	if err != nil {
+		return fmt.Errorf("verification failed, nothing saved: %w", timeoutOr(err, timeout, "the key check"))
 	}
 
 	dataSource, err := promptLine(ctx, reader, errOut, "Default data source (ID or name, optional): ")

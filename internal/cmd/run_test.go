@@ -50,6 +50,7 @@ type fakeServer struct {
 	mu              sync.Mutex
 	neverDone       bool // job stays PENDING forever; used by timeout tests
 	rejectSession   bool // GET /api/session returns 401; used by login tests
+	hangSession     bool // GET /api/session never answers
 	hangCancel      bool // DELETE /api/jobs/... never answers
 	hangList        bool // GET /api/data_sources never answers
 	hangCreate      bool // POST /api/queries never answers
@@ -182,6 +183,10 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 		if reject {
 			w.WriteHeader(http.StatusUnauthorized)
 			mustJSON(w, map[string]any{"message": "Couldn't find resource. Please login and try again."})
+			return
+		}
+		if f.hangSession {
+			f.park(r)
 			return
 		}
 		mustJSON(w, map[string]any{"id": 1})
@@ -528,5 +533,52 @@ func TestWithTimeout(t *testing.T) {
 	defer cancelBounded()
 	if _, ok := bounded.Deadline(); !ok {
 		t.Error("a positive timeout set no deadline")
+	}
+}
+
+// TestTimeoutFlagContract walks the tree so that every command talking to
+// Redash is held to one --timeout: the same name, type and 90 s default,
+// applied without a caller passing anything. The profile commands only read
+// and write the config file, so a flag there would silently do nothing.
+func TestTimeoutFlagContract(t *testing.T) {
+	bounded := [][]string{
+		{"run"},
+		{"query", "create"},
+		{"query", "update"},
+		{"query", "list"},
+		{"query", "show"},
+		{"data-source", "list"},
+		{"auth", "login"},
+	}
+	unbounded := [][]string{{"profile", "list"}, {"profile", "use"}}
+
+	root, _ := newRootCmd()
+	for _, path := range bounded {
+		cmd, _, err := root.Find(path)
+		if err != nil {
+			t.Errorf("Find(%v) error = %v", path, err)
+			continue
+		}
+		flag := cmd.Flags().Lookup("timeout")
+		if flag == nil {
+			t.Errorf("%s has no --timeout", cmd.CommandPath())
+			continue
+		}
+		if want := defaultTimeout.String(); flag.DefValue != want {
+			t.Errorf("%s --timeout default = %s, want %s", cmd.CommandPath(), flag.DefValue, want)
+		}
+		if got := flag.Value.Type(); got != "duration" {
+			t.Errorf("%s --timeout type = %s, want duration", cmd.CommandPath(), got)
+		}
+	}
+	for _, path := range unbounded {
+		cmd, _, err := root.Find(path)
+		if err != nil {
+			t.Errorf("Find(%v) error = %v", path, err)
+			continue
+		}
+		if cmd.Flags().Lookup("timeout") != nil {
+			t.Errorf("%s has a --timeout, which would do nothing", cmd.CommandPath())
+		}
 	}
 }
