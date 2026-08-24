@@ -65,7 +65,8 @@ match in full, implying that type on its own. All three are repeatable and
 split at the first `=`, so a value or a pattern may contain one:
 
 ```sh
-rdsh query create --name "Signups by team" --param-default days=7 --param-type days=number   --param-default team=core -f signups.sql
+rdsh query create --name "Signups by team" --param-default days=7 \
+  --param-type days=number --param-default team=core -f signups.sql
 rdsh query update 42 --param-default days=30
 ```
 

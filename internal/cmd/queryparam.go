@@ -508,7 +508,7 @@ func collectPlaceholders(sql string) ([]placeholder, error) {
 				return nil, fmt.Errorf("%s closes a section that was never opened", matched)
 			}
 			if last := open[len(open)-1]; last.key != key {
-				return nil, fmt.Errorf("%s closes {{#%s}}, which is not the section it ends", matched, last.key)
+				return nil, fmt.Errorf("%s closes %s, which is not the section it ends", matched, last)
 			}
 			open = open[:len(open)-1]
 		case "":
@@ -520,7 +520,7 @@ func collectPlaceholders(sql string) ([]placeholder, error) {
 		// section and everything outside it — so refusing is the safer
 		// reading: a template the server and rdsh parse differently is one
 		// whose coverage check proves nothing.
-		return nil, fmt.Errorf("{{#%s}} is never closed", open[len(open)-1].key)
+		return nil, fmt.Errorf("%s is never closed", open[len(open)-1])
 	}
 	return found, nil
 }
@@ -529,6 +529,15 @@ func collectPlaceholders(sql string) ([]placeholder, error) {
 type openSection struct {
 	key      string
 	inverted bool
+}
+
+// String writes the tag back as it was in the SQL, so an error about an
+// inverted section does not name it as a plain one.
+func (s openSection) String() string {
+	if s.inverted {
+		return "{{^" + s.key + "}}"
+	}
+	return "{{#" + s.key + "}}"
 }
 
 // underInverted reports whether the tag being read sits inside an inverted

@@ -216,16 +216,15 @@ func (p *QueryParameter) UnmarshalJSON(data []byte) error {
 }
 
 // MarshalJSON writes the definition back, leaving out the fields that were
-// never set. An empty title would show as a blank label in the Redash UI
-// where an absent one falls back to the name, and a null value reads as
-// "no default" exactly as an absent one does.
+// never set. A null value reads as "no default" exactly as an absent one
+// does, so it is left out too — but an empty one is not: see below.
 func (p QueryParameter) MarshalJSON() ([]byte, error) {
 	raw := make(map[string]json.RawMessage, len(p.Extra)+5)
 	for k, v := range p.Extra {
 		raw[k] = v
 	}
 	put := func(key string, value any) error {
-		if value == nil || value == "" {
+		if value == nil {
 			return nil
 		}
 		encoded, err := json.Marshal(value)
@@ -235,12 +234,23 @@ func (p QueryParameter) MarshalJSON() ([]byte, error) {
 		raw[key] = encoded
 		return nil
 	}
+	// An empty string means "never set" for the fields that name something,
+	// and leaving one out is what keeps a blank label from replacing the
+	// name Redash falls back to. It does not mean that for the default: ""
+	// is a value a text parameter can hold, and dropping it would store the
+	// parameter as having no default at all.
+	putName := func(key, value string) error {
+		if value == "" {
+			return nil
+		}
+		return put(key, value)
+	}
 	if err := errors.Join(
-		put("name", p.Name),
-		put("title", p.Title),
-		put("type", p.Type),
+		putName("name", p.Name),
+		putName("title", p.Title),
+		putName("type", p.Type),
 		put("value", p.Value),
-		put("regex", p.Regex),
+		putName("regex", p.Regex),
 	); err != nil {
 		return nil, err
 	}

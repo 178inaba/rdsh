@@ -1334,6 +1334,29 @@ func TestQueryCreateParameterDefinitions(t *testing.T) {
 	}
 }
 
+// TestQueryCreateEmptyDefault pins that an empty text default is a value
+// rather than an omission. Stored as no default at all, the parameter would
+// keep the query's shared result from ever linking — the failure defining
+// one exists to avoid.
+func TestQueryCreateEmptyDefault(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	if _, err := runRdsh(t, srv, "", "query", "create", "--name", "q",
+		"SELECT {{note}}", "--data-source", "5", "--param-default", "note="); err != nil {
+		t.Fatalf("query create error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	want := map[string]any{"parameters": []any{
+		map[string]any{"name": "note", "title": "note", "type": "text", "value": ""},
+	}}
+	if !reflect.DeepEqual(f.created["options"], want) {
+		t.Errorf("created options = %v, want %v", f.created["options"], want)
+	}
+}
+
 // TestQueryCreateRejectsBadParameters covers the checks that run before
 // anything reaches the server. A create that got through with a broken
 // definition would leave a query behind that has to be found and fixed.

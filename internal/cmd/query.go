@@ -204,7 +204,11 @@ a range, enum or dropdown query is refused rather than rewritten.
 
 Passing any of them, or new SQL, also holds the query to the rule that every
 parameter its SQL uses is defined. Changing only the name or description
-does not, so a query whose parameters have no defaults can still be renamed.`,
+does not, so a query whose parameters have no defaults can still be renamed.
+
+Defining a parameter on a query that had none is a one-way move: from then
+on, executing it with a name that is not among its definitions is refused,
+which includes an ` + "`rdsh query refresh --param`" + ` that used to work.`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runQueryUpdate(cmd, args, g, name, description, file, publish, draft, params, timeout.Duration())

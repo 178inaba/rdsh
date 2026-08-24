@@ -655,8 +655,8 @@ func decodeNumeric(t *testing.T, data []byte) any {
 }
 
 // TestQueryOptionsOmitsEmptyKeys keeps a definition rdsh composes from
-// growing keys the caller never set: a title Redash would then show blank,
-// and a value that would read as a default of "" rather than as none.
+// growing keys the caller never set — a title Redash would then show blank
+// where an absent one falls back to the name.
 func TestQueryOptionsOmitsEmptyKeys(t *testing.T) {
 	f := &fakeRedash{t: t}
 	srv := f.server()
@@ -671,6 +671,32 @@ func TestQueryOptionsOmitsEmptyKeys(t *testing.T) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	want := `{"options":{"parameters":[{"name":"days"}]}}`
+	if got := string(f.updatedRaw); got != want {
+		t.Errorf("updated query body = %s, want %s", got, want)
+	}
+}
+
+// TestQueryOptionsKeepsAnEmptyDefault is the other side of that rule: ""
+// is a value a text parameter can hold, so it has to reach the server as
+// one. Left out, the parameter would be stored as having no default at all
+// — the state that keeps a query's shared result from ever linking, which
+// is the whole failure setting a default exists to avoid.
+func TestQueryOptionsKeepsAnEmptyDefault(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	options := redash.QueryOptions{Parameters: []redash.QueryParameter{
+		{Name: "note", Title: "note", Type: "text", Value: ""},
+	}}
+	if _, err := newTestClient(srv, "k").UpdateQuery(context.Background(), 7,
+		redash.QueryUpdate{Options: &options}); err != nil {
+		t.Fatalf("UpdateQuery() error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	want := `{"options":{"parameters":[{"name":"note","title":"note","type":"text","value":""}]}}`
 	if got := string(f.updatedRaw); got != want {
 		t.Errorf("updated query body = %s, want %s", got, want)
 	}
