@@ -567,8 +567,12 @@ func TestTimeoutFlagContract(t *testing.T) {
 		if want := defaultTimeout.String(); flag.DefValue != want {
 			t.Errorf("%s --timeout default = %s, want %s", cmd.CommandPath(), flag.DefValue, want)
 		}
-		if got := flag.Value.Type(); got != "duration" {
-			t.Errorf("%s --timeout type = %s, want duration", cmd.CommandPath(), got)
+		// The type rather than Type(), which DurationVar also reports as
+		// "duration": registered that way the flag would look identical
+		// here and take a negative duration, which withTimeout reads as no
+		// limit at all.
+		if _, ok := flag.Value.(*timeoutFlag); !ok {
+			t.Errorf("%s --timeout is a %T, want a *timeoutFlag", cmd.CommandPath(), flag.Value)
 		}
 	}
 	for _, path := range unbounded {
