@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -31,7 +30,7 @@ func newQueryCreateCmd(g *globalFlags) *cobra.Command {
 		file        string
 		dataSource  string
 		draft       bool
-		timeout     time.Duration
+		timeout     timeoutFlag
 	)
 	cmd := &cobra.Command{
 		Use:   "create --name <name> [sql]",
@@ -45,7 +44,7 @@ result to the new query, so the URL opens with data already on it.
 The query is published unless --draft is given.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQueryCreate(cmd, args, g, name, description, file, dataSource, draft, timeout)
+			return runQueryCreate(cmd, args, g, name, description, file, dataSource, draft, timeout.Duration())
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "name of the saved query (required)")
@@ -53,16 +52,14 @@ The query is published unless --draft is given.`,
 	cmd.Flags().StringVarP(&file, "file", "f", "", "read SQL from a file")
 	cmd.Flags().StringVar(&dataSource, "data-source", "", "data source ID or name (default: the profile's data source)")
 	cmd.Flags().BoolVar(&draft, "draft", false, "leave the query a draft instead of publishing it")
-	cmd.Flags().DurationVar(&timeout, "timeout", defaultTimeout, "give up on the server after this duration (0 = no limit)")
+	addTimeoutFlag(cmd, &timeout, "give up on the server after this duration (0 = no limit)")
 	return cmd
 }
 
 func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, description, file, dataSource string, draft bool, timeout time.Duration) error {
-	// Both checks come before anything that talks to the server, so a bad
-	// invocation cannot leave a query behind.
-	if timeout < 0 {
-		return fmt.Errorf("--timeout must not be negative (got %s)", timeout)
-	}
+	// Checked before anything that talks to the server, so a bad invocation
+	// cannot leave a query behind. --timeout needs no check of its own:
+	// timeoutFlag refuses a negative duration as the flags are parsed.
 	if name == "" {
 		return errors.New("--name is required")
 	}
@@ -78,12 +75,8 @@ func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 	}
 	client := redash.NewClient(conn.URL, conn.APIKey)
 
-	ctx := cmd.Context()
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
+	ctx, cancel := withTimeout(cmd.Context(), timeout)
+	defer cancel()
 
 	dsID, err := resolveDataSource(ctx, client, dataSource, conn.DataSource)
 	if err != nil {
@@ -100,7 +93,7 @@ func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 		Description:  description,
 	})
 	if err != nil {
-		return timeoutOr(err, timeout)
+		return timeoutOr(err, timeout, "query")
 	}
 
 	url := client.QueryURL(q.ID)
@@ -128,7 +121,7 @@ func newQueryUpdateCmd(g *globalFlags) *cobra.Command {
 		file        string
 		publish     bool
 		draft       bool
-		timeout     time.Duration
+		timeout     timeoutFlag
 	)
 	cmd := &cobra.Command{
 		Use:   "update <id|url> [sql]",
@@ -148,7 +141,7 @@ made in the Redash UI in the meantime fails the command instead of being
 overwritten.`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQueryUpdate(cmd, args, g, name, description, file, publish, draft, timeout)
+			return runQueryUpdate(cmd, args, g, name, description, file, publish, draft, timeout.Duration())
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "rename the saved query")
@@ -156,16 +149,12 @@ overwritten.`,
 	cmd.Flags().StringVarP(&file, "file", "f", "", "read the new SQL from a file")
 	cmd.Flags().BoolVar(&publish, "publish", false, "publish the query, putting it in everyone's query list")
 	cmd.Flags().BoolVar(&draft, "draft", false, "turn the query back into a draft, hiding it from other users")
-	cmd.Flags().DurationVar(&timeout, "timeout", defaultTimeout, "give up on the server after this duration (0 = no limit)")
+	addTimeoutFlag(cmd, &timeout, "give up on the server after this duration (0 = no limit)")
 	cmd.MarkFlagsMutuallyExclusive("publish", "draft")
 	return cmd
 }
 
 func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, description, file string, publish, draft bool, timeout time.Duration) error {
-	if timeout < 0 {
-		return fmt.Errorf("--timeout must not be negative (got %s)", timeout)
-	}
-
 	// The SQL argument counts as given by being there at all rather than by
 	// being non-empty as it is in create, so that `update <id> "" -f file`
 	// is the conflict it looks like instead of quietly using the file.
@@ -225,12 +214,8 @@ func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 		return err
 	}
 
-	ctx := cmd.Context()
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
+	ctx, cancel := withTimeout(cmd.Context(), timeout)
+	defer cancel()
 
 	// Read first for the version the update sends back. Both calls report a
 	// deadline as an ordinary timeout, unlike create: an update is a single
@@ -238,7 +223,7 @@ func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 	// and re-running the command as it stands is safe.
 	current, err := client.GetQuery(ctx, id)
 	if err != nil {
-		return timeoutOr(err, timeout)
+		return timeoutOr(err, timeout, "query")
 	}
 	u.Version = &current.Version
 
@@ -248,7 +233,7 @@ func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 			// failure has to say what recovering from it takes.
 			return fmt.Errorf("%w; read it again and re-run the update", err)
 		}
-		return timeoutOr(err, timeout)
+		return timeoutOr(err, timeout, "query")
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout(), client.QueryURL(id))
@@ -265,7 +250,7 @@ func newQueryListCmd(g *globalFlags) *cobra.Command {
 		mine         bool
 		limit        int
 		outputFormat = format.CSV
-		timeout      time.Duration
+		timeout      timeoutFlag
 	)
 	cmd := &cobra.Command{
 		Use:   "list [search]",
@@ -284,21 +269,18 @@ Only the first 30 are printed unless --limit says otherwise; when there are
 more, a note saying so goes to stderr, leaving stdout to the rows alone.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQueryList(cmd, args, g, mine, limit, outputFormat, timeout)
+			return runQueryList(cmd, args, g, mine, limit, outputFormat, timeout.Duration())
 		},
 	}
 	cmd.Flags().BoolVar(&mine, "mine", false, "list only the queries you created")
 	cmd.Flags().IntVar(&limit, "limit", defaultQueryListLimit, "maximum number of queries to print")
 	cmd.Flags().Var(&outputFormat, "format", "output format: csv, tsv, or json")
-	cmd.Flags().DurationVar(&timeout, "timeout", defaultTimeout, "give up on the server after this duration (0 = no limit)")
+	addTimeoutFlag(cmd, &timeout, "give up on the server after this duration (0 = no limit)")
 	return cmd
 }
 
 func runQueryList(cmd *cobra.Command, args []string, g *globalFlags, mine bool, limit int,
 	outputFormat format.Format, timeout time.Duration) error {
-	if timeout < 0 {
-		return fmt.Errorf("--timeout must not be negative (got %s)", timeout)
-	}
 	// The client documents this as a precondition rather than enforcing it,
 	// the way every other method there leaves argument checking to this
 	// layer. Checking it here names the flag the caller actually passed,
@@ -322,12 +304,8 @@ func runQueryList(cmd *cobra.Command, args []string, g *globalFlags, mine bool, 
 	}
 	client := redash.NewClient(conn.URL, conn.APIKey)
 
-	ctx := cmd.Context()
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
+	ctx, cancel := withTimeout(cmd.Context(), timeout)
+	defer cancel()
 
 	// A listing reads nothing into existence, so a deadline that cuts it off
 	// leaves the server as it was and re-running is safe — which is what
@@ -338,7 +316,7 @@ func runQueryList(cmd *cobra.Command, args []string, g *globalFlags, mine bool, 
 		Limit:  limit,
 	})
 	if err != nil {
-		return timeoutOr(err, timeout)
+		return timeoutOr(err, timeout, "query")
 	}
 
 	if err := format.Write(cmd.OutOrStdout(), outputFormat, queryListResult(client, queries)); err != nil {
@@ -406,7 +384,7 @@ func (showFormat) Type() string { return "string" }
 func newQueryShowCmd(g *globalFlags) *cobra.Command {
 	var (
 		outputFormat showFormat
-		timeout      time.Duration
+		timeout      timeoutFlag
 	)
 	cmd := &cobra.Command{
 		Use:   "show <id|url>",
@@ -426,21 +404,18 @@ SQL: id, name, description, data_source_id, is_draft, url and query. json is
 the only value it takes — a multi-line SQL body does not fit a row format.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQueryShow(cmd, args, g, outputFormat, timeout)
+			return runQueryShow(cmd, args, g, outputFormat, timeout.Duration())
 		},
 	}
 	cmd.Flags().Var(&outputFormat, "format", "output format: json (default: the SQL itself)")
-	cmd.Flags().DurationVar(&timeout, "timeout", defaultTimeout, "give up on the server after this duration (0 = no limit)")
+	addTimeoutFlag(cmd, &timeout, "give up on the server after this duration (0 = no limit)")
 	return cmd
 }
 
 func runQueryShow(cmd *cobra.Command, args []string, g *globalFlags, outputFormat showFormat,
 	timeout time.Duration) error {
-	// The only check left before the request: --format was validated as the
-	// flags were parsed.
-	if timeout < 0 {
-		return fmt.Errorf("--timeout must not be negative (got %s)", timeout)
-	}
+	// No pre-flight check of its own: --format and --timeout are both
+	// validated as the flags are parsed.
 
 	conn, err := resolveConnection(g.profile)
 	if err != nil {
@@ -452,19 +427,15 @@ func runQueryShow(cmd *cobra.Command, args []string, g *globalFlags, outputForma
 		return err
 	}
 
-	ctx := cmd.Context()
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
+	ctx, cancel := withTimeout(cmd.Context(), timeout)
+	defer cancel()
 
 	// A read leaves the server as it was, so a deadline that cuts it off is
 	// an ordinary timeout: re-running the command as it stands is safe,
 	// which is what exit code 124 tells an agent to do.
 	q, err := client.GetQuery(ctx, id)
 	if err != nil {
-		return timeoutOr(err, timeout)
+		return timeoutOr(err, timeout, "query")
 	}
 
 	out := cmd.OutOrStdout()
