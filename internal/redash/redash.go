@@ -93,26 +93,178 @@ type Query struct {
 	// against the query as it stands; Redash refuses one carrying a stale
 	// value.
 	Version int `json:"version"`
-	// Options carries the settings the query holds beside its SQL. Only
-	// the parameter definitions are read; the rest of the object is left
-	// where it is, since nothing here writes options back.
+	// Options carries the settings the query holds beside its SQL. An
+	// update replaces the whole object, so it is decoded in a form that
+	// survives being written back: see QueryOptions.
 	Options QueryOptions `json:"options"`
 }
 
-// QueryOptions is the part of a saved query's options rdsh reads. A query
-// saved through the API carries no options at all, which reads back as the
-// zero value rather than as a failure.
+// QueryOptions is a saved query's options object. Redash's update replaces
+// it wholesale, so a caller editing one key has to send back everything
+// else as it was; Extra is what makes that possible for the keys rdsh has
+// no field for. A query saved through the API carries no options at all,
+// which reads back as the zero value rather than as a failure.
 type QueryOptions struct {
-	Parameters []QueryParameter `json:"parameters"`
+	// Parameters is the parameter definitions, in the order they are
+	// stored. Nil means the object had no parameters key, which is left
+	// out again on the way back rather than written as an empty list.
+	Parameters []QueryParameter
+	// Extra is every other key of the object, kept as it arrived.
+	Extra map[string]json.RawMessage
 }
 
-// QueryParameter is one parameter defined on a saved query.
+// parametersKey is the one options key QueryOptions has a field for; it is
+// held out of Extra on the way in and put back on the way out.
+const parametersKey = "parameters"
+
+// UnmarshalJSON decodes the object into the parameter definitions and Extra.
+//
+// The decoder is built here rather than taken from the caller because
+// encoding/json does not carry UseNumber into a custom UnmarshalJSON: a
+// plain json.Unmarshal would turn a numeric default into a float64 and lose
+// the text QueryParameter.Value promises to reproduce.
+func (o *QueryOptions) UnmarshalJSON(data []byte) error {
+	// The keys are taken as raw JSON, which needs no number handling of its
+	// own; each value that becomes a Go type goes through decodeJSON below.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	// A null options key reaches a custom UnmarshalJSON where it would have
+	// been skipped for a plain struct field. Nothing to decode is the same
+	// as no options at all.
+	if raw == nil {
+		return nil
+	}
+	if params, ok := raw[parametersKey]; ok {
+		if err := decodeJSON(bytes.NewReader(params), &o.Parameters); err != nil {
+			return err
+		}
+		delete(raw, parametersKey)
+	}
+	if len(raw) > 0 {
+		o.Extra = raw
+	}
+	return nil
+}
+
+// MarshalJSON writes Extra back with the parameter definitions in place of
+// the key they were read from.
+func (o QueryOptions) MarshalJSON() ([]byte, error) {
+	raw := make(map[string]json.RawMessage, len(o.Extra)+1)
+	for k, v := range o.Extra {
+		raw[k] = v
+	}
+	if o.Parameters != nil {
+		params, err := json.Marshal(o.Parameters)
+		if err != nil {
+			return nil, err
+		}
+		raw[parametersKey] = params
+	}
+	return json.Marshal(raw)
+}
+
+// QueryParameter is one parameter defined on a saved query. The fields are
+// the scalar parameter kinds rdsh can express; Extra carries everything
+// else — the fields a range, enum or dropdown-query parameter needs — so a
+// definition rdsh does not understand still survives an update.
 type QueryParameter struct {
-	Name string `json:"name"`
+	Name  string
+	Title string
+	Type  string
 	// Value is the stored default, decoded as it came: numbers stay
 	// json.Number, so sending one back reproduces the text Redash hashed
 	// the query with. A parameter defined without a default is nil.
-	Value any `json:"value"`
+	Value any
+	// Regex is the pattern a text-pattern parameter's value must match in
+	// full. Empty on every other type.
+	Regex string
+	Extra map[string]json.RawMessage
+}
+
+// UnmarshalJSON decodes one definition, keeping the keys rdsh has no field
+// for. It builds its own decoder for the same reason QueryOptions does.
+func (p *QueryParameter) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	// Each key a field claims is taken out of raw, so what is left over is
+	// exactly what Extra has to carry.
+	take := func(key string, out any) error {
+		value, ok := raw[key]
+		if !ok {
+			return nil
+		}
+		delete(raw, key)
+		return decodeJSON(bytes.NewReader(value), out)
+	}
+	if err := errors.Join(
+		take("name", &p.Name),
+		take("title", &p.Title),
+		take("type", &p.Type),
+		take("value", &p.Value),
+		take("regex", &p.Regex),
+	); err != nil {
+		return err
+	}
+	if len(raw) > 0 {
+		p.Extra = raw
+	}
+	return nil
+}
+
+// MarshalJSON writes the definition back, leaving out the fields that were
+// never set. A null value reads as "no default" exactly as an absent one
+// does, so it is left out too — but an empty one is not: see below.
+func (p QueryParameter) MarshalJSON() ([]byte, error) {
+	raw := make(map[string]json.RawMessage, len(p.Extra)+5)
+	for k, v := range p.Extra {
+		raw[k] = v
+	}
+	put := func(key string, value any) error {
+		if value == nil {
+			return nil
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		raw[key] = encoded
+		return nil
+	}
+	// An empty string means "never set" for the fields that name something,
+	// and leaving one out is what keeps a blank label from replacing the
+	// name Redash falls back to. It does not mean that for the default: ""
+	// is a value a text parameter can hold, and dropping it would store the
+	// parameter as having no default at all.
+	putName := func(key, value string) error {
+		if value == "" {
+			return nil
+		}
+		return put(key, value)
+	}
+	if err := errors.Join(
+		putName("name", p.Name),
+		putName("title", p.Title),
+		putName("type", p.Type),
+		put("value", p.Value),
+		putName("regex", p.Regex),
+	); err != nil {
+		return nil, err
+	}
+	return json.Marshal(raw)
+}
+
+// decodeJSON decodes one JSON value with numbers kept as json.Number, which
+// is what every decoding in this package does: responses through do, and the
+// custom UnmarshalJSON methods above, which have to spell it out because
+// encoding/json does not pass the setting down to them.
+func decodeJSON(r io.Reader, out any) error {
+	dec := json.NewDecoder(r)
+	dec.UseNumber()
+	return dec.Decode(out)
 }
 
 // NewQuery holds the fields the API accepts when a saved query is created.
@@ -121,6 +273,11 @@ type NewQuery struct {
 	Query        string `json:"query"`
 	DataSourceID int    `json:"data_source_id"`
 	Description  string `json:"description,omitempty"`
+	// Options carries the parameter definitions the new query is saved
+	// with. Redash recomputes the query hash as it saves, so defaults set
+	// here link an existing result to the query at creation time; nil
+	// leaves the options key out.
+	Options *QueryOptions `json:"options,omitempty"`
 }
 
 // QueryUpdate holds the fields to change on a saved query; a nil field is
@@ -131,6 +288,11 @@ type QueryUpdate struct {
 	Description *string `json:"description,omitempty"`
 	Query       *string `json:"query,omitempty"`
 	IsDraft     *bool   `json:"is_draft,omitempty"`
+	// Options replaces the query's whole options object, so it has to be
+	// composed from one that was just read rather than from nothing. Nil
+	// leaves the key out, which is what keeps an update of the query's
+	// metadata alone from clearing its parameter definitions.
+	Options *QueryOptions `json:"options,omitempty"`
 	// Version opts into the server's conflict check: set it to the version
 	// of the query this update was composed from and a competing edit fails
 	// the update instead of being silently overwritten. Left nil, the
@@ -475,11 +637,9 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if out == nil {
 		return nil
 	}
-	dec := json.NewDecoder(resp.Body)
-	// Keep numbers as json.Number so large integers survive the round trip
-	// to CSV/JSON output instead of degrading to float64.
-	dec.UseNumber()
-	if err := dec.Decode(out); err != nil {
+	// Numbers stay json.Number so large integers survive the round trip to
+	// CSV/JSON output instead of degrading to float64.
+	if err := decodeJSON(resp.Body, out); err != nil {
 		return fmt.Errorf("%s %s: decode response: %w", method, path, err)
 	}
 	return nil

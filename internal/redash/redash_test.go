@@ -1,10 +1,12 @@
 package redash_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -38,13 +40,21 @@ type fakeRedash struct {
 	submittedBody map[string]any
 	refreshBody   map[string]any // body of POST /api/queries/7/results
 	queryOptions  map[string]any // options served by GET /api/queries/7
-	createdQuery  map[string]any // body of POST /api/queries
-	updatedQuery  map[string]any // body of POST /api/queries/7
-	queryVersion  int            // version served by GET /api/queries/7
-	updateStatus  int            // HTTP status for POST /api/queries/7, default 200
-	savedQueries  int            // queries the listing endpoints hold
-	listRequests  []listRequest  // what reached the listing endpoints, in order
-	gotAuth       []string
+	// nullQueryOptions serves options as an explicit null instead, which is
+	// a different shape from the key being absent.
+	nullQueryOptions bool
+	createdQuery     map[string]any // body of POST /api/queries
+	updatedQuery     map[string]any // body of POST /api/queries/7
+	// updatedRaw is that same body before decoding. A round-trip test
+	// compares numbers, and decoding twice — once here without UseNumber
+	// for the tests that read plain values, once from these bytes with it —
+	// is what keeps a large integer readable as the text that was sent.
+	updatedRaw   []byte
+	queryVersion int           // version served by GET /api/queries/7
+	updateStatus int           // HTTP status for POST /api/queries/7, default 200
+	savedQueries int           // queries the listing endpoints hold
+	listRequests []listRequest // what reached the listing endpoints, in order
+	gotAuth      []string
 }
 
 // listRequest is one request to a listing endpoint, kept so a test can
@@ -138,7 +148,10 @@ func (f *fakeRedash) server() *httptest.Server {
 			"id": 7, "name": "saved", "query": "SELECT 1", "data_source_id": 3,
 			"is_draft": true, "version": f.queryVersion,
 		}
-		if f.queryOptions != nil {
+		switch {
+		case f.nullQueryOptions:
+			query["options"] = nil
+		case f.queryOptions != nil:
 			query["options"] = f.queryOptions
 		}
 		writeJSON(w, query)
@@ -154,7 +167,12 @@ func (f *fakeRedash) server() *httptest.Server {
 	mux.HandleFunc("POST /api/queries/7", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		if err := json.NewDecoder(r.Body).Decode(&f.updatedQuery); err != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			f.t.Errorf("read updated query: %v", err)
+		}
+		f.updatedRaw = body
+		if err := json.Unmarshal(body, &f.updatedQuery); err != nil {
 			f.t.Errorf("decode updated query: %v", err)
 		}
 		if f.updateStatus != 0 && f.updateStatus != http.StatusOK {
@@ -492,12 +510,16 @@ func TestGetQueryOptions(t *testing.T) {
 		t.Fatalf("GetQuery() error = %v", err)
 	}
 	want := []redash.QueryParameter{
-		{Name: "days", Value: json.Number("7")},
-		{Name: "team", Value: "core"},
-		{Name: "since", Value: nil},
+		{Name: "days", Type: "number", Value: json.Number("7")},
+		{Name: "team", Type: "text", Value: "core"},
+		{Name: "since", Type: "date", Value: nil},
 	}
 	if !reflect.DeepEqual(q.Options.Parameters, want) {
 		t.Errorf("Options.Parameters = %+v, want %+v", q.Options.Parameters, want)
+	}
+	if want := json.RawMessage("true"); !reflect.DeepEqual(q.Options.Extra["apply_auto_limit"], want) {
+		t.Errorf("Options.Extra[apply_auto_limit] = %s, want %s",
+			q.Options.Extra["apply_auto_limit"], want)
 	}
 }
 
@@ -515,6 +537,215 @@ func TestGetQueryWithoutOptions(t *testing.T) {
 	}
 	if len(q.Options.Parameters) != 0 {
 		t.Errorf("Options.Parameters = %+v, want none", q.Options.Parameters)
+	}
+}
+
+// TestGetQueryNullOptions covers the shape a struct field cannot see on its
+// own: an options key present but null. encoding/json skips a null for a
+// plain struct, but hands it to a custom UnmarshalJSON, so the decoding has
+// to leave the value alone rather than fail on it.
+func TestGetQueryNullOptions(t *testing.T) {
+	f := &fakeRedash{t: t, nullQueryOptions: true}
+	srv := f.server()
+	defer srv.Close()
+
+	q, err := newTestClient(srv, "k").GetQuery(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetQuery() error = %v", err)
+	}
+	if len(q.Options.Parameters) != 0 || q.Options.Extra != nil {
+		t.Errorf("Options = %+v, want the zero value", q.Options)
+	}
+}
+
+// TestQueryOptionsRoundTrip is the property an update depends on: Redash
+// replaces options wholesale, so everything read has to come back byte for
+// byte unless the caller changed it. That covers keys rdsh has no field for
+// (apply_auto_limit, enumOptions), parameter types it cannot express (enum),
+// and a default too large for a float64 — which is what a decoding that
+// dropped UseNumber would silently round.
+func TestQueryOptionsRoundTrip(t *testing.T) {
+	options := map[string]any{
+		"apply_auto_limit": true,
+		"parameters": []map[string]any{
+			{"name": "since", "title": "Target date", "type": "date", "value": "2026-08-01"},
+			{"name": "team", "type": "enum", "value": "core", "enumOptions": "core\nplatform"},
+			{"name": "id", "title": "id", "type": "number", "value": 9007199254740993},
+			{"name": "code", "title": "code", "type": "text-pattern", "value": "AB12", "regex": "[A-Z]{2}[0-9]{2}"},
+			{"name": "note", "title": "note", "type": "text"},
+		},
+	}
+	f := &fakeRedash{t: t, queryOptions: options}
+	srv := f.server()
+	defer srv.Close()
+
+	client := newTestClient(srv, "k")
+	q, err := client.GetQuery(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetQuery() error = %v", err)
+	}
+	if _, err := client.UpdateQuery(context.Background(), 7, redash.QueryUpdate{Options: &q.Options}); err != nil {
+		t.Fatalf("UpdateQuery() error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	sent, ok := decodeNumeric(t, f.updatedRaw).(map[string]any)
+	if !ok {
+		t.Fatalf("update body = %s, want a JSON object", f.updatedRaw)
+	}
+	want := numeric(t, options)
+	if !reflect.DeepEqual(sent["options"], want) {
+		t.Errorf("sent options = %#v, want %#v", sent["options"], want)
+	}
+}
+
+// TestQueryOptionsNormalisesNullValue names the one way a round trip does
+// not reproduce what it read: a default stored as an explicit null comes
+// back with the key absent. Redash reads a definition's default with
+// .get("value") when it hashes the query, so both spellings mean the same
+// "no default" to it — which is what makes the normalisation safe.
+func TestQueryOptionsNormalisesNullValue(t *testing.T) {
+	f := &fakeRedash{t: t, queryOptions: map[string]any{
+		"parameters": []map[string]any{{"name": "since", "type": "date", "value": nil}},
+	}}
+	srv := f.server()
+	defer srv.Close()
+
+	client := newTestClient(srv, "k")
+	q, err := client.GetQuery(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetQuery() error = %v", err)
+	}
+	if _, err := client.UpdateQuery(context.Background(), 7, redash.QueryUpdate{Options: &q.Options}); err != nil {
+		t.Fatalf("UpdateQuery() error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	want := `{"options":{"parameters":[{"name":"since","type":"date"}]}}`
+	if got := string(f.updatedRaw); got != want {
+		t.Errorf("updated query body = %s, want %s", got, want)
+	}
+}
+
+// numeric renders a want value the way UseNumber decoding reads it back, so
+// a round-trip comparison is written once as the options the fake served.
+func numeric(t *testing.T, v any) any {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal want: %v", err)
+	}
+	return decodeNumeric(t, data)
+}
+
+// decodeNumeric reads JSON the way the client does, keeping numbers as the
+// text they were written with — which is what makes a default too large for
+// a float64 comparable at all.
+func decodeNumeric(t *testing.T, data []byte) any {
+	t.Helper()
+	var out any
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(&out); err != nil {
+		t.Fatalf("decode %s: %v", data, err)
+	}
+	return out
+}
+
+// TestQueryOptionsOmitsEmptyKeys keeps a definition rdsh composes from
+// growing keys the caller never set — a title Redash would then show blank
+// where an absent one falls back to the name.
+func TestQueryOptionsOmitsEmptyKeys(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	options := redash.QueryOptions{Parameters: []redash.QueryParameter{{Name: "days"}}}
+	if _, err := newTestClient(srv, "k").UpdateQuery(context.Background(), 7,
+		redash.QueryUpdate{Options: &options}); err != nil {
+		t.Fatalf("UpdateQuery() error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	want := `{"options":{"parameters":[{"name":"days"}]}}`
+	if got := string(f.updatedRaw); got != want {
+		t.Errorf("updated query body = %s, want %s", got, want)
+	}
+}
+
+// TestQueryOptionsKeepsAnEmptyDefault is the other side of that rule: ""
+// is a value a text parameter can hold, so it has to reach the server as
+// one. Left out, the parameter would be stored as having no default at all
+// — the state that keeps a query's shared result from ever linking, which
+// is the whole failure setting a default exists to avoid.
+func TestQueryOptionsKeepsAnEmptyDefault(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	options := redash.QueryOptions{Parameters: []redash.QueryParameter{
+		{Name: "note", Title: "note", Type: "text", Value: ""},
+	}}
+	if _, err := newTestClient(srv, "k").UpdateQuery(context.Background(), 7,
+		redash.QueryUpdate{Options: &options}); err != nil {
+		t.Fatalf("UpdateQuery() error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	want := `{"options":{"parameters":[{"name":"note","title":"note","type":"text","value":""}]}}`
+	if got := string(f.updatedRaw); got != want {
+		t.Errorf("updated query body = %s, want %s", got, want)
+	}
+}
+
+// TestCreateQueryOptions pins that definitions travel on the create itself.
+// Redash recomputes the query hash from the defaults as it saves, so a
+// second call would be a query saved without them and then corrected.
+func TestCreateQueryOptions(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	options := redash.QueryOptions{Parameters: []redash.QueryParameter{
+		{Name: "days", Title: "days", Type: "number", Value: json.Number("7")},
+	}}
+	if _, err := newTestClient(srv, "k").CreateQuery(context.Background(), redash.NewQuery{
+		Name: "saved", Query: "SELECT {{days}}", DataSourceID: 3, Options: &options,
+	}); err != nil {
+		t.Fatalf("CreateQuery() error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	want := map[string]any{"parameters": []any{map[string]any{
+		"name": "days", "title": "days", "type": "number", "value": float64(7),
+	}}}
+	if !reflect.DeepEqual(f.createdQuery["options"], want) {
+		t.Errorf("created query options = %v, want %v", f.createdQuery["options"], want)
+	}
+}
+
+// TestCreateQueryOmitsOptions is the other half: a query with no parameters
+// must not be sent an empty options object, which would clear on an update
+// and says something the caller did not on a create.
+func TestCreateQueryOmitsOptions(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	if _, err := newTestClient(srv, "k").CreateQuery(context.Background(), redash.NewQuery{
+		Name: "saved", Query: "SELECT 1", DataSourceID: 3,
+	}); err != nil {
+		t.Fatalf("CreateQuery() error = %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.createdQuery["options"]; ok {
+		t.Errorf("created query body = %v, want no options key", f.createdQuery)
 	}
 }
 

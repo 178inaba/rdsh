@@ -1295,3 +1295,314 @@ func TestQueryRefreshReadTimeoutIsATimeout(t *testing.T) {
 		t.Errorf("executed body = %v, want no execution after the read timed out", f.refreshed)
 	}
 }
+
+// assertNotUpdated is assertNothingSent for the checks an update can only
+// make after reading the query: the read is expected, the write is not.
+func assertNotUpdated(t *testing.T, f *fakeServer) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.updated != nil {
+		t.Errorf("update body = %v, want no update at all", f.updated)
+	}
+}
+
+// TestQueryCreateParameterDefinitions is what the whole feature is for: a
+// parametrized query saved with defaults gets a query hash Redash can match
+// an existing result to, so the URL opens with data on it for everyone
+// rather than only for whoever runs it next.
+func TestQueryCreateParameterDefinitions(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	if _, err := runRdsh(t, srv, "", "query", "create", "--name", "signups",
+		"SELECT * FROM users WHERE id = {{user_id}} AND team = {{team}}",
+		"--data-source", "5",
+		"--param-default", "user_id=42", "--param-type", "user_id=number",
+		"--param-default", "team=core"); err != nil {
+		t.Fatalf("query create error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	want := map[string]any{"parameters": []any{
+		map[string]any{"name": "user_id", "title": "user_id", "type": "number", "value": float64(42)},
+		map[string]any{"name": "team", "title": "team", "type": "text", "value": "core"},
+	}}
+	if !reflect.DeepEqual(f.created["options"], want) {
+		t.Errorf("created options = %v, want %v", f.created["options"], want)
+	}
+}
+
+// TestQueryCreateEmptyDefault pins that an empty text default is a value
+// rather than an omission. Stored as no default at all, the parameter would
+// keep the query's shared result from ever linking — the failure defining
+// one exists to avoid.
+func TestQueryCreateEmptyDefault(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	if _, err := runRdsh(t, srv, "", "query", "create", "--name", "q",
+		"SELECT {{note}}", "--data-source", "5", "--param-default", "note="); err != nil {
+		t.Fatalf("query create error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	want := map[string]any{"parameters": []any{
+		map[string]any{"name": "note", "title": "note", "type": "text", "value": ""},
+	}}
+	if !reflect.DeepEqual(f.created["options"], want) {
+		t.Errorf("created options = %v, want %v", f.created["options"], want)
+	}
+}
+
+// TestQueryCreateRejectsBadParameters covers the checks that run before
+// anything reaches the server. A create that got through with a broken
+// definition would leave a query behind that has to be found and fixed.
+func TestQueryCreateRejectsBadParameters(t *testing.T) {
+	tests := []struct {
+		name    string
+		sql     string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "placeholder with no default",
+			sql:     "SELECT {{user_id}}, {{team}}",
+			args:    []string{"--param-default", "user_id=42"},
+			wantErr: "team",
+		},
+		{
+			name:    "default for a name the SQL never uses",
+			sql:     "SELECT {{user_id}}",
+			args:    []string{"--param-default", "user_id=42", "--param-default", "usr_id=1"},
+			wantErr: "usr_id",
+		},
+		{
+			name:    "default that is not of its type",
+			sql:     "SELECT {{user_id}}",
+			args:    []string{"--param-default", "user_id=abc", "--param-type", "user_id=number"},
+			wantErr: "user_id",
+		},
+		{
+			name:    "dotted placeholder",
+			sql:     "SELECT {{d.start}}",
+			args:    nil,
+			wantErr: "d.start",
+		},
+		{
+			name:    "section placeholder",
+			sql:     "SELECT 1 {{#cond}}AND 2{{/cond}}",
+			args:    nil,
+			wantErr: "cond",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeServer{}
+			srv := f.start(t)
+
+			args := append([]string{"query", "create", "--name", "q", tt.sql, "--data-source", "5"}, tt.args...)
+			_, err := runRdsh(t, srv, "", args...)
+			if err == nil {
+				t.Fatal("error = nil, want the invocation refused")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %v, want it to mention %q", err, tt.wantErr)
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if f.created != nil {
+				t.Errorf("created query = %v, want nothing sent", f.created)
+			}
+		})
+	}
+}
+
+// TestQueryCreateIgnoresNonParameterTags keeps the coverage check to what
+// Redash counts as a parameter: a query full of tags it never collects has
+// nothing to define, and demanding a definition would make it unsavable.
+func TestQueryCreateIgnoresNonParameterTags(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	sql := "SELECT {{{raw}}}, {{&also}} {{!note}} {{>part}} {{^unless}}1{{/unless}}"
+	if _, err := runRdsh(t, srv, "", "query", "create", "--name", "q", sql, "--data-source", "5"); err != nil {
+		t.Fatalf("query create error = %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.created["options"]; ok {
+		t.Errorf("created options = %v, want no options key", f.created["options"])
+	}
+}
+
+// TestQueryUpdateParameterDefinitionsMerge is the read-modify-write an
+// update depends on: Redash replaces options wholesale, so a change to one
+// default has to leave every other key of the object exactly as it was.
+func TestQueryUpdateParameterDefinitionsMerge(t *testing.T) {
+	f := &fakeServer{savedQuerySQL: "SELECT {{since}}, {{team}}", savedQueryOptions: map[string]any{
+		"apply_auto_limit": true,
+		"parameters": []map[string]any{
+			{"name": "since", "title": "Target date", "type": "date", "value": "2026-01-01"},
+			{"name": "team", "title": "Team", "type": "text", "value": "core"},
+		},
+	}}
+	srv := f.start(t)
+
+	if _, err := runRdsh(t, srv, "", "query", "update", "7",
+		"--param-default", "since=2026-08-01"); err != nil {
+		t.Fatalf("query update error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	want := map[string]any{
+		"apply_auto_limit": true,
+		"parameters": []any{
+			map[string]any{"name": "since", "title": "Target date", "type": "date", "value": "2026-08-01"},
+			map[string]any{"name": "team", "title": "Team", "type": "text", "value": "core"},
+		},
+	}
+	if !reflect.DeepEqual(f.updated["options"], want) {
+		t.Errorf("update options = %v, want %v", f.updated["options"], want)
+	}
+}
+
+// TestQueryUpdateRegexPromotesType covers the flag that carries an
+// implication: a pattern only applies to a text-pattern parameter, so
+// setting one sets the type with it.
+func TestQueryUpdateRegexPromotesType(t *testing.T) {
+	f := &fakeServer{savedQuerySQL: "SELECT {{status}}", savedQueryParameters: []map[string]any{
+		{"name": "status", "title": "Status", "type": "text", "value": "AB12"},
+	}}
+	srv := f.start(t)
+
+	if _, err := runRdsh(t, srv, "", "query", "update", "7",
+		"--param-regex", `status=[A-Z]{2}[0-9]{2}`); err != nil {
+		t.Fatalf("query update error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	want := map[string]any{"parameters": []any{map[string]any{
+		"name": "status", "title": "Status", "type": "text-pattern",
+		"value": "AB12", "regex": `[A-Z]{2}[0-9]{2}`,
+	}}}
+	if !reflect.DeepEqual(f.updated["options"], want) {
+		t.Errorf("update options = %v, want %v", f.updated["options"], want)
+	}
+}
+
+// TestQueryUpdateTypeOnlyUsesTheStoredRegex is the same rule read the other
+// way: an entry that already holds a pattern needs no --param-regex to be
+// named a text-pattern parameter.
+func TestQueryUpdateTypeOnlyUsesTheStoredRegex(t *testing.T) {
+	f := &fakeServer{savedQuerySQL: "SELECT {{status}}", savedQueryParameters: []map[string]any{
+		{"name": "status", "type": "text", "value": "AB12", "regex": `[A-Z]{2}[0-9]{2}`},
+	}}
+	srv := f.start(t)
+
+	if _, err := runRdsh(t, srv, "", "query", "update", "7",
+		"--param-type", "status=text-pattern"); err != nil {
+		t.Fatalf("query update error = %v", err)
+	}
+}
+
+// TestQueryUpdateRejectsBadParameters covers the refusals an update makes
+// once it has read the query. None of them may write: a definition saved in
+// a state Redash refuses at execution time is one whose only symptom is a
+// shared result that stops moving.
+func TestQueryUpdateRejectsBadParameters(t *testing.T) {
+	tests := []struct {
+		name       string
+		sql        string
+		parameters []map[string]any
+		args       []string
+		wantErr    string
+	}{
+		{
+			name:       "stored default is not of the new type",
+			sql:        "SELECT {{n}}",
+			parameters: []map[string]any{{"name": "n", "type": "text", "value": "abc"}},
+			args:       []string{"--param-type", "n=number"},
+			wantErr:    "n",
+		},
+		{
+			name:       "definition rdsh cannot express",
+			sql:        "SELECT {{status}}",
+			parameters: []map[string]any{{"name": "status", "type": "enum", "value": "core"}},
+			args:       []string{"--param-default", "status=active"},
+			wantErr:    "enum",
+		},
+		{
+			name:       "new SQL asks for a parameter nothing defines",
+			sql:        "SELECT {{n}}",
+			parameters: []map[string]any{{"name": "n", "type": "text", "value": "a"}},
+			args:       []string{"SELECT {{n}}, {{m}}"},
+			wantErr:    "m",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeServer{savedQuerySQL: tt.sql, savedQueryParameters: tt.parameters}
+			srv := f.start(t)
+
+			_, err := runRdsh(t, srv, "", append([]string{"query", "update", "7"}, tt.args...)...)
+			if err == nil {
+				t.Fatal("error = nil, want the update refused")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %v, want it to mention %q", err, tt.wantErr)
+			}
+			assertNotUpdated(t, f)
+		})
+	}
+}
+
+// TestQueryUpdateMalformedParamIsRefusedBeforeTheRead pins that a flag which
+// cannot be read at all costs no request: nothing about it needs the query.
+func TestQueryUpdateMalformedParamIsRefusedBeforeTheRead(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	if _, err := runRdsh(t, srv, "", "query", "update", "7", "--param-default", "days"); err == nil {
+		t.Fatal("error = nil, want a --param-default with no name refused")
+	}
+	assertNothingSent(t, f)
+}
+
+// TestQueryUpdateMetadataSkipsCoverage keeps the coverage check off the
+// edits it has no business blocking: a query whose parameters have no
+// defaults is exactly the query this feature exists to fix, and renaming it
+// must not be the thing that demands they be defined first.
+func TestQueryUpdateMetadataSkipsCoverage(t *testing.T) {
+	f := &fakeServer{savedQuerySQL: "SELECT {{since}}, {{range.start}}"}
+	srv := f.start(t)
+
+	if _, err := runRdsh(t, srv, "", "query", "update", "7", "--name", "renamed"); err != nil {
+		t.Fatalf("query update error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.updated["options"]; ok {
+		t.Errorf("update options = %v, want no options key", f.updated["options"])
+	}
+}
+
+// TestQueryUpdateWithoutChangesNamesTheParameterFlags keeps the refusal's
+// advice complete now that there are more ways to change a query.
+func TestQueryUpdateWithoutChangesNamesTheParameterFlags(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	_, err := runRdsh(t, srv, "", "query", "update", "7")
+	if err == nil {
+		t.Fatal("error = nil, want an update with nothing to change refused")
+	}
+	if !strings.Contains(err.Error(), "--param-default") {
+		t.Errorf("error = %v, want it to list --param-default among the ways to change a query", err)
+	}
+}

@@ -68,6 +68,10 @@ type fakeServer struct {
 	// options.parameters; nil serves a query carrying no options at all,
 	// which is what `rdsh query create` saves.
 	savedQueryParameters []map[string]any
+	// savedQueryOptions serves the whole options object instead, for the
+	// tests that need the keys beside the parameters. It wins over
+	// savedQueryParameters when both are set.
+	savedQueryOptions map[string]any
 	// missingParameter makes the execution endpoint refuse the way Redash
 	// refuses a placeholder it was given no value for: a failed job rather
 	// than a message, and an HTTP 400.
@@ -166,7 +170,10 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 			"id": savedQueryID, "name": "saved", "description": "what it is for", "query": sql,
 			"data_source_id": 5, "is_draft": true, "version": savedQueryVersion,
 		}
-		if f.savedQueryParameters != nil {
+		switch {
+		case f.savedQueryOptions != nil:
+			query["options"] = f.savedQueryOptions
+		case f.savedQueryParameters != nil:
 			query["options"] = map[string]any{"parameters": f.savedQueryParameters}
 		}
 		mustJSON(w, query)

@@ -53,6 +53,37 @@ rdsh query update 42 -f signups.sql
 rdsh query update https://redash.example.com/queries/42 --name "Weekly signups (EU)" --publish
 ```
 
+A parametrized query needs its parameters defined, on either command, or the
+query page stays empty for everyone else: Redash matches a result to a query
+by the hash of its SQL with the stored defaults substituted, so a parameter
+without a default can never link one. `--param-default name=value` declares
+the parameter and sets its default, `--param-type name=type` gives it a type
+(`text` unless said otherwise; the rest are `text-pattern`, `number`, `date`,
+`datetime-local` and `datetime-with-seconds`), and `--param-regex
+name=pattern` gives a `text-pattern` parameter the pattern its value must
+match in full, implying that type on its own. All three are repeatable and
+split at the first `=`, so a value or a pattern may contain one:
+
+```sh
+rdsh query create --name "Signups by team" --param-default days=7 \
+  --param-type days=number --param-default team=core -f signups.sql
+rdsh query update 42 --param-default days=30
+```
+
+On `update` this is an edit rather than a rewrite: only the keys the flags
+carry are overwritten, so a title set in the Redash UI, a type no flag
+mentions, and the definitions of every parameter not named all survive.
+Parameters Redash offers that rdsh cannot express — ranges, enums and
+dropdown queries — are refused rather than rewritten; define those in the
+Redash UI.
+
+Every parameter the SQL uses has to be covered whenever `create` runs, or
+`update` is given new SQL or any `--param-*` flag; a metadata-only edit such
+as a rename skips the check, so a query whose parameters have no defaults can
+still be renamed. Defining parameters is also a one-way move: once a query
+carries definitions, executing it with a name that is not among them is
+refused.
+
 To find a saved query in the first place — its ID, or whether it is still a draft — list them. Without an argument the queries you can see come back newest first; with one, it is a full-text search the server answers in its own relevance order:
 
 ```sh
@@ -85,7 +116,7 @@ Parameters are supplied with `--param name=value`, repeatable; everything after 
 rdsh query refresh 42 --param days=30 --param team=core
 ```
 
-The shared result only advances when the query runs with its own stored defaults, because Redash matches an execution to a query by the hash of the text it ran. Override a default with `--param`, or cover a parameter that has no stored default, and the execution still succeeds and still prints the rows, but the query page keeps showing what it showed before; a line saying so goes to stderr and the command still exits 0.
+The shared result only advances when the query runs with its own stored defaults, because Redash matches an execution to a query by the hash of the text it ran. Override a default with `--param`, or cover a parameter that has no stored default, and the execution still succeeds and still prints the rows, but the query page keeps showing what it showed before; a line saying so goes to stderr and the command still exits 0. To make the overridden values the ones everyone sees, change the defaults themselves with `rdsh query update --param-default` and refresh again.
 
 Unlike `rdsh run` and `rdsh query create`, `rdsh query update` never reads stdin — SQL is optional there, so falling back to it would turn whatever was piped in into the query. The update also carries the version the query had when it was read, so an edit made in the Redash UI in the meantime fails the command instead of being overwritten; read the query again and re-run.
 

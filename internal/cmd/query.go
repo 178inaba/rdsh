@@ -31,6 +31,7 @@ func newQueryCreateCmd(g *globalFlags) *cobra.Command {
 		file        string
 		dataSource  string
 		draft       bool
+		params      paramFlagValues
 		timeout     timeoutFlag
 	)
 	cmd := &cobra.Command{
@@ -42,10 +43,26 @@ SQL is taken from the argument, from --file, or from stdin when neither is
 given. Run the same SQL with ` + "`rdsh run`" + ` first and Redash attaches that
 result to the new query, so the URL opens with data already on it.
 
-The query is published unless --draft is given.`,
+The query is published unless --draft is given.
+
+A parameter the SQL uses ({{name}}) needs a stored default, or the query
+page stays empty for everyone else: Redash matches a result to a query by
+the hash of its SQL with the defaults substituted, so a parameter without
+one can never link a result. --param-default name=value declares the
+parameter and sets its default; --param-type name=type gives it a type,
+which is text unless said otherwise. The types are text, text-pattern,
+number, date, datetime-local and datetime-with-seconds. A text-pattern
+parameter also needs --param-regex name=pattern, which implies that type on
+its own. All three are repeatable and split at the first =, so a value or a
+pattern may contain one.
+
+Every parameter the SQL uses has to be covered, and defining any of them is
+a one-way move: once a query carries definitions, executing it with a name
+that is not among them is refused. Range, enum and dropdown-query parameters
+are the Redash UI's to define.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQueryCreate(cmd, args, g, name, description, file, dataSource, draft, timeout.Duration())
+			return runQueryCreate(cmd, args, g, name, description, file, dataSource, draft, params, timeout.Duration())
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "name of the saved query (required)")
@@ -53,11 +70,25 @@ The query is published unless --draft is given.`,
 	cmd.Flags().StringVarP(&file, "file", "f", "", "read SQL from a file")
 	cmd.Flags().StringVar(&dataSource, "data-source", "", "data source ID or name (default: the profile's data source)")
 	cmd.Flags().BoolVar(&draft, "draft", false, "leave the query a draft instead of publishing it")
+	addParamDefinitionFlags(cmd, &params)
 	addTimeoutFlag(cmd, &timeout, serverTimeoutUsage)
 	return cmd
 }
 
-func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, description, file, dataSource string, draft bool, timeout time.Duration) error {
+// addParamDefinitionFlags declares the three flags that define a saved
+// query's parameters. create and update take the same set, and mean the same
+// thing by it, so the wording is written once.
+func addParamDefinitionFlags(cmd *cobra.Command, params *paramFlagValues) {
+	cmd.Flags().StringArrayVar(&params.defaults, "param-default", nil,
+		"parameter default as name=value, repeatable")
+	cmd.Flags().StringArrayVar(&params.types, "param-type", nil,
+		"parameter type as name=type, repeatable (default: text)")
+	cmd.Flags().StringArrayVar(&params.regexes, "param-regex", nil,
+		"pattern a text-pattern parameter's value must match, as name=pattern, repeatable")
+}
+
+func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, description, file, dataSource string,
+	draft bool, params paramFlagValues, timeout time.Duration) error {
 	// Checked before anything that talks to the server, so a bad invocation
 	// cannot leave a query behind. --timeout needs no check of its own:
 	// timeoutFlag refuses a negative duration as the flags are parsed.
@@ -66,6 +97,19 @@ func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 	}
 
 	sql, err := readSQL(cmd, args, file)
+	if err != nil {
+		return err
+	}
+
+	// Composed and checked before anything is sent, for the same reason
+	// --name is: a create that reached the server with a broken definition
+	// would leave a query behind to find and fix, and Redash stores one
+	// without complaint.
+	set, err := parseParamFlags(params)
+	if err != nil {
+		return err
+	}
+	definitions, err := paramDefinitions(nil, set, sql, true)
 	if err != nil {
 		return err
 	}
@@ -84,6 +128,15 @@ func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 		return timeoutOr(err, timeout, "the data source lookup")
 	}
 
+	// The definitions travel on the create itself: Redash recomputes the
+	// query hash as it saves and links the result matching it, so a query
+	// born with its defaults picks up the result `rdsh run` just produced.
+	// Setting them afterwards would save the query without them first.
+	var options *redash.QueryOptions
+	if len(definitions) > 0 {
+		options = &redash.QueryOptions{Parameters: definitions}
+	}
+
 	// A create the deadline cuts off is an ordinary timeout: either the
 	// query was never saved, or it was and its ID never arrived, so there
 	// is nothing to report but the expiry.
@@ -92,6 +145,7 @@ func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 		Query:        sql,
 		DataSourceID: dsID,
 		Description:  description,
+		Options:      options,
 	})
 	if err != nil {
 		return timeoutOr(err, timeout, "query")
@@ -122,6 +176,7 @@ func newQueryUpdateCmd(g *globalFlags) *cobra.Command {
 		file        string
 		publish     bool
 		draft       bool
+		params      paramFlagValues
 		timeout     timeoutFlag
 	)
 	cmd := &cobra.Command{
@@ -139,10 +194,24 @@ back to it would turn whatever a caller happened to pipe in into the query.
 
 The update carries the version the query had when it was read, so an edit
 made in the Redash UI in the meantime fails the command instead of being
-overwritten.`,
+overwritten.
+
+--param-default, --param-type and --param-regex mean what they do on create,
+applied as an edit: for a parameter already defined, only the keys the flags
+carry are overwritten, so a title set in the Redash UI and a type no flag
+mentions survive, as does every definition not named. A parameter defined as
+a range, enum or dropdown query is refused rather than rewritten.
+
+Passing any of them, or new SQL, also holds the query to the rule that every
+parameter its SQL uses is defined. Changing only the name or description
+does not, so a query whose parameters have no defaults can still be renamed.
+
+Defining a parameter on a query that had none is a one-way move: from then
+on, executing it with a name that is not among its definitions is refused,
+which includes an ` + "`rdsh query refresh --param`" + ` that used to work.`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQueryUpdate(cmd, args, g, name, description, file, publish, draft, timeout.Duration())
+			return runQueryUpdate(cmd, args, g, name, description, file, publish, draft, params, timeout.Duration())
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "rename the saved query")
@@ -150,12 +219,14 @@ overwritten.`,
 	cmd.Flags().StringVarP(&file, "file", "f", "", "read the new SQL from a file")
 	cmd.Flags().BoolVar(&publish, "publish", false, "publish the query, putting it in everyone's query list")
 	cmd.Flags().BoolVar(&draft, "draft", false, "turn the query back into a draft, hiding it from other users")
+	addParamDefinitionFlags(cmd, &params)
 	addTimeoutFlag(cmd, &timeout, serverTimeoutUsage)
 	cmd.MarkFlagsMutuallyExclusive("publish", "draft")
 	return cmd
 }
 
-func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, description, file string, publish, draft bool, timeout time.Duration) error {
+func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, description, file string,
+	publish, draft bool, params paramFlagValues, timeout time.Duration) error {
 	// The SQL argument counts as given by being there at all rather than by
 	// being non-empty as it is in create, so that `update <id> "" -f file`
 	// is the conflict it looks like instead of quietly using the file.
@@ -180,29 +251,47 @@ func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 		return errors.New("--name must not be empty")
 	}
 
+	// Read once so a flag that cannot be read at all costs no request. The
+	// rest of the parameter checking needs the query, and waits for it.
+	set, err := parseParamFlags(params)
+	if err != nil {
+		return err
+	}
+
 	// Which fields to send comes from whether the flag was given rather
 	// than from its value, so that --description "" clears the description
 	// while leaving it out keeps whatever the query has.
 	flags := cmd.Flags()
 	var u redash.QueryUpdate
-	if flags.Changed("name") {
-		u.Name = &name
-	}
-	if flags.Changed("description") {
-		u.Description = &description
-	}
+	// Tracked rather than read back off u: the parameter definitions can
+	// only be composed once the query has been read, so u still looks empty
+	// here for an invocation that passes nothing but a --param-* flag.
+	// Whether the SQL is held to the coverage check is decided here rather
+	// than beside the check itself, so the flags that follow cannot widen
+	// it: renaming a query must not be what demands its parameters be
+	// defined.
+	definesParams := params.given()
+	checkSQL := hasSQL || definesParams
+	changed := checkSQL
 	if hasSQL {
 		u.Query = &sql
+	}
+	if flags.Changed("name") {
+		u.Name, changed = &name, true
+	}
+	if flags.Changed("description") {
+		u.Description, changed = &description, true
 	}
 	switch {
 	case flags.Changed("publish"):
 		isDraft := !publish
-		u.IsDraft = &isDraft
+		u.IsDraft, changed = &isDraft, true
 	case flags.Changed("draft"):
-		u.IsDraft = &draft
+		u.IsDraft, changed = &draft, true
 	}
-	if u == (redash.QueryUpdate{}) {
-		return errors.New("nothing to change; pass new SQL, --name, --description, --publish, or --draft")
+	if !changed {
+		return errors.New("nothing to change; pass new SQL, --name, --description, --publish, --draft, " +
+			"--param-default, --param-type, or --param-regex")
 	}
 
 	conn, err := resolveConnection(g.profile)
@@ -227,6 +316,27 @@ func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 		return timeoutOr(err, timeout, "query")
 	}
 	u.Version = &current.Version
+
+	// The SQL the definitions are held against is the one the query will
+	// have. Checking it at all is what a metadata-only edit skips: a query
+	// whose parameters have no defaults is the very thing this feature
+	// exists to fix, so renaming one must not be what demands they be
+	// defined first.
+	finalSQL := current.Query
+	if hasSQL {
+		finalSQL = sql
+	}
+	definitions, err := paramDefinitions(current.Options.Parameters, set, finalSQL, checkSQL)
+	if err != nil {
+		return err
+	}
+	if definesParams {
+		// Redash replaces options wholesale, so what goes back is the whole
+		// object as it was read with the definitions merged into it.
+		options := current.Options
+		options.Parameters = definitions
+		u.Options = &options
+	}
 
 	if _, err := client.UpdateQuery(ctx, id, u); err != nil {
 		if errors.Is(err, redash.ErrQueryVersionConflict) {
@@ -573,20 +683,31 @@ func runQueryRefresh(cmd *cobra.Command, args []string, g *globalFlags, params [
 }
 
 // parseQueryParams reads the --param values into the overrides the
-// execution applies. Each is split at the first = and everything after it
-// is the value, which needs no escaping of its own: a Redash parameter name
-// cannot contain one. A name given twice takes its last value, as a flag
-// bound to a single variable would.
+// execution applies. A name given twice takes its last value, as a flag
+// bound to a single variable would — unlike the --param-* flags that define
+// a parameter, where a repeat is refused rather than resolved.
 func parseQueryParams(params []string) (map[string]string, error) {
 	overrides := make(map[string]string, len(params))
 	for _, p := range params {
-		name, value, ok := strings.Cut(p, "=")
-		if !ok || name == "" {
-			return nil, fmt.Errorf("--param %q has no parameter name to bind to; pass it as name=value", p)
+		name, value, err := splitParamToken("--param", p)
+		if err != nil {
+			return nil, err
 		}
 		overrides[name] = value
 	}
 	return overrides, nil
+}
+
+// splitParamToken reads one name=value token of a parameter flag. The split
+// is at the first =, so everything after it is the value and needs no
+// escaping of its own: a Redash parameter name cannot contain one, and a
+// pattern very well may.
+func splitParamToken(flag, token string) (string, string, error) {
+	name, value, ok := strings.Cut(token, "=")
+	if !ok || name == "" {
+		return "", "", fmt.Errorf("%s %q has no parameter name to bind to; pass it as name=value", flag, token)
+	}
+	return name, value, nil
 }
 
 // mergeParameters returns the values to execute the saved query with, and
