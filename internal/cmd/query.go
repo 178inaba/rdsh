@@ -602,21 +602,21 @@ func parseQueryParams(params []string) (map[string]string, error) {
 // reachable no other way.
 func mergeParameters(stored []redash.QueryParameter, overrides map[string]string) (map[string]any, bool) {
 	values := make(map[string]any, len(stored)+len(overrides))
-	defaults := make(map[string]any, len(stored))
 	for _, p := range stored {
 		if p.Value == nil {
 			continue
 		}
-		defaults[p.Name] = p.Value
 		values[p.Name] = p.Value
 	}
 
 	matchesDefaults := true
 	for name, override := range overrides {
-		// An override that spells out the stored default is not one: the
-		// stored value stays, so the request is the one the query page
-		// makes down to the JSON types, and the cached result still moves.
-		if stored, ok := defaults[name]; ok && parameterText(stored) == override {
+		// Reading what is already there is reading the stored default:
+		// each name is a key of overrides, so nothing has replaced it yet.
+		// An override that spells out that default is not one — the stored
+		// value stays, so the request is the one the query page makes down
+		// to the JSON types, and the cached result still moves.
+		if current, ok := values[name]; ok && parameterText(current) == override {
 			continue
 		}
 		values[name] = override
