@@ -28,7 +28,7 @@ func newDataSourceListCmd(g *globalFlags) *cobra.Command {
 			return runDataSourceList(cmd, g, timeout.Duration())
 		},
 	}
-	addTimeoutFlag(cmd, &timeout, "give up on the server after this duration (0 = no limit)")
+	addTimeoutFlag(cmd, &timeout, serverTimeoutUsage)
 	return cmd
 }
 

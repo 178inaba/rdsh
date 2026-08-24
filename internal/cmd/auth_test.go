@@ -131,10 +131,12 @@ func authLoginAnswers(srvURL string) []string {
 // prompt on its own and the command would abort with or without the fix
 // under test.
 type scriptedStdin struct {
-	answers     []string // each ends with "\n"
-	interruptAt int
-	interrupt   func()
-	release     <-chan struct{} // closed by the test, releasing a parked read
+	answers []string // each ends with "\n"
+	// before runs just before the read at that index is served, which is
+	// how a test puts something between two prompts: an interrupt, or a
+	// pause long enough to outlast a deadline.
+	before  map[int]func()
+	release <-chan struct{} // closed by the test, releasing a parked read
 
 	reads int
 }
@@ -142,8 +144,8 @@ type scriptedStdin struct {
 func (s *scriptedStdin) Read(p []byte) (int, error) {
 	read := s.reads
 	s.reads++
-	if read == s.interruptAt {
-		s.interrupt()
+	if before, ok := s.before[read]; ok {
+		before()
 	}
 	if read < len(s.answers) {
 		return copy(p, s.answers[read]), nil
@@ -152,23 +154,20 @@ func (s *scriptedStdin) Read(p []byte) (int, error) {
 	return 0, io.EOF
 }
 
-func newScriptedStdin(t *testing.T, interrupt func(), interruptAt int, answers []string) *scriptedStdin {
+// newScriptedStdin answers the prompts in order, running whatever before
+// holds for a prompt as that prompt is read.
+func newScriptedStdin(t *testing.T, answers []string, before map[int]func()) *scriptedStdin {
 	t.Helper()
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
-	return &scriptedStdin{
-		answers:     answers,
-		interruptAt: interruptAt,
-		interrupt:   interrupt,
-		release:     release,
-	}
+	return &scriptedStdin{answers: answers, before: before, release: release}
 }
 
 // newInterruptedStdin answers the prompts in order and then interrupts at
 // the next one, standing in for a user who presses Ctrl-C instead of typing.
 func newInterruptedStdin(t *testing.T, interrupt func(), answers ...string) *scriptedStdin {
 	t.Helper()
-	return newScriptedStdin(t, interrupt, len(answers), answers)
+	return newScriptedStdin(t, answers, map[int]func(){len(answers): interrupt})
 }
 
 // assertInterrupted checks what an interrupted run looks like below
@@ -298,7 +297,7 @@ func TestAuthLoginInterruptedWithFinalAnswerSavesNothing(t *testing.T) {
 
 	// Interrupt as the final answer is served, rather than in place of it.
 	answers := authLoginAnswers(srv.URL)
-	stdin := newScriptedStdin(t, cancel, len(answers)-1, answers)
+	stdin := newScriptedStdin(t, answers, map[int]func(){len(answers) - 1: cancel})
 	out, err := runRdshWithStdin(t, ctx, stdin, "auth", "login")
 	assertInterrupted(t, out, err)
 	assertConfigUnchanged(t, nil)
@@ -500,29 +499,6 @@ func TestAuthLoginVerificationTimeout(t *testing.T) {
 	assertConfigUnchanged(t, nil)
 }
 
-// slowStdin answers the prompts in order, pausing before the reads named in
-// delayed so that their answers arrive well after --timeout would have
-// expired. A prompt bounded by the verification's deadline would abort
-// there rather than wait.
-type slowStdin struct {
-	answers []string // each ends with "\n"
-	delayed map[int]time.Duration
-
-	reads int
-}
-
-func (s *slowStdin) Read(p []byte) (int, error) {
-	read := s.reads
-	s.reads++
-	if delay, ok := s.delayed[read]; ok {
-		time.Sleep(delay)
-	}
-	if read < len(s.answers) {
-		return copy(p, s.answers[read]), nil
-	}
-	return 0, io.EOF
-}
-
 // TestAuthLoginPromptsOutliveTheTimeout pins that --timeout bounds the
 // verification alone. The prompt before it would fail if the whole run were
 // bounded, and the one after it if the derived context replaced the
@@ -534,13 +510,13 @@ func TestAuthLoginPromptsOutliveTheTimeout(t *testing.T) {
 	dir := t.TempDir()
 	setRdshEnv(t, dir, nil)
 
+	// Long enough that a prompt sharing the verification's deadline would
+	// have given up on the user by the time the answer arrives.
 	const timeout = 200 * time.Millisecond
-	stdin := &slowStdin{
-		answers: authLoginAnswers(srv.URL),
-		// The profile name prompt, which runs before the verification, and
-		// the data source prompt, which runs after it.
-		delayed: map[int]time.Duration{2: 2 * timeout, 3: 2 * timeout},
-	}
+	dawdle := func() { time.Sleep(2 * timeout) }
+	// The profile name prompt, which runs before the verification, and the
+	// data source prompt, which runs after it.
+	stdin := newScriptedStdin(t, authLoginAnswers(srv.URL), map[int]func(){2: dawdle, 3: dawdle})
 
 	out, err := runRdshWithStdin(t, context.Background(), stdin, "auth", "login", "--timeout", timeout.String())
 	if err != nil {

@@ -271,11 +271,16 @@ func (f *timeoutFlag) Set(s string) error {
 	return nil
 }
 
+// serverTimeoutUsage describes --timeout for a command that only waits on
+// an answer. run says something else because it has a server-side job to
+// cancel, and auth login because what it waits on is the verification;
+// everything else shares this wording rather than restating it.
+const serverTimeoutUsage = "give up on the server after this duration (0 = no limit)"
+
 // addTimeoutFlag registers --timeout on cmd. The name, the type and the
-// default are one contract across every command that talks to the server;
-// only the usage differs, because run is the one with a server-side job to
-// cancel. The default is assigned before the flag is registered, which is
-// what pflag reads the displayed default from.
+// default are one contract across every command that talks to the server.
+// The default is assigned before the flag is registered, which is what
+// pflag reads the displayed default from.
 func addTimeoutFlag(cmd *cobra.Command, timeout *timeoutFlag, usage string) {
 	*timeout = timeoutFlag(defaultTimeout)
 	cmd.Flags().Var(timeout, "timeout", usage)

@@ -52,7 +52,7 @@ The query is published unless --draft is given.`,
 	cmd.Flags().StringVarP(&file, "file", "f", "", "read SQL from a file")
 	cmd.Flags().StringVar(&dataSource, "data-source", "", "data source ID or name (default: the profile's data source)")
 	cmd.Flags().BoolVar(&draft, "draft", false, "leave the query a draft instead of publishing it")
-	addTimeoutFlag(cmd, &timeout, "give up on the server after this duration (0 = no limit)")
+	addTimeoutFlag(cmd, &timeout, serverTimeoutUsage)
 	return cmd
 }
 
@@ -149,7 +149,7 @@ overwritten.`,
 	cmd.Flags().StringVarP(&file, "file", "f", "", "read the new SQL from a file")
 	cmd.Flags().BoolVar(&publish, "publish", false, "publish the query, putting it in everyone's query list")
 	cmd.Flags().BoolVar(&draft, "draft", false, "turn the query back into a draft, hiding it from other users")
-	addTimeoutFlag(cmd, &timeout, "give up on the server after this duration (0 = no limit)")
+	addTimeoutFlag(cmd, &timeout, serverTimeoutUsage)
 	cmd.MarkFlagsMutuallyExclusive("publish", "draft")
 	return cmd
 }
@@ -275,7 +275,7 @@ more, a note saying so goes to stderr, leaving stdout to the rows alone.`,
 	cmd.Flags().BoolVar(&mine, "mine", false, "list only the queries you created")
 	cmd.Flags().IntVar(&limit, "limit", defaultQueryListLimit, "maximum number of queries to print")
 	cmd.Flags().Var(&outputFormat, "format", "output format: csv, tsv, or json")
-	addTimeoutFlag(cmd, &timeout, "give up on the server after this duration (0 = no limit)")
+	addTimeoutFlag(cmd, &timeout, serverTimeoutUsage)
 	return cmd
 }
 
@@ -408,7 +408,7 @@ the only value it takes — a multi-line SQL body does not fit a row format.`,
 		},
 	}
 	cmd.Flags().Var(&outputFormat, "format", "output format: json (default: the SQL itself)")
-	addTimeoutFlag(cmd, &timeout, "give up on the server after this duration (0 = no limit)")
+	addTimeoutFlag(cmd, &timeout, serverTimeoutUsage)
 	return cmd
 }
 
