@@ -31,6 +31,7 @@ func newQueryCreateCmd(g *globalFlags) *cobra.Command {
 		file        string
 		dataSource  string
 		draft       bool
+		params      paramFlagValues
 		timeout     timeoutFlag
 	)
 	cmd := &cobra.Command{
@@ -45,7 +46,7 @@ result to the new query, so the URL opens with data already on it.
 The query is published unless --draft is given.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQueryCreate(cmd, args, g, name, description, file, dataSource, draft, timeout.Duration())
+			return runQueryCreate(cmd, args, g, name, description, file, dataSource, draft, params, timeout.Duration())
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "name of the saved query (required)")
@@ -53,11 +54,25 @@ The query is published unless --draft is given.`,
 	cmd.Flags().StringVarP(&file, "file", "f", "", "read SQL from a file")
 	cmd.Flags().StringVar(&dataSource, "data-source", "", "data source ID or name (default: the profile's data source)")
 	cmd.Flags().BoolVar(&draft, "draft", false, "leave the query a draft instead of publishing it")
+	addParamDefinitionFlags(cmd, &params)
 	addTimeoutFlag(cmd, &timeout, serverTimeoutUsage)
 	return cmd
 }
 
-func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, description, file, dataSource string, draft bool, timeout time.Duration) error {
+// addParamDefinitionFlags declares the three flags that define a saved
+// query's parameters. create and update take the same set, and mean the same
+// thing by it, so the wording is written once.
+func addParamDefinitionFlags(cmd *cobra.Command, params *paramFlagValues) {
+	cmd.Flags().StringArrayVar(&params.defaults, "param-default", nil,
+		"parameter default as name=value, repeatable")
+	cmd.Flags().StringArrayVar(&params.types, "param-type", nil,
+		"parameter type as name=type, repeatable (default: text)")
+	cmd.Flags().StringArrayVar(&params.regexes, "param-regex", nil,
+		"pattern a text-pattern parameter's value must match, as name=pattern, repeatable")
+}
+
+func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, description, file, dataSource string,
+	draft bool, params paramFlagValues, timeout time.Duration) error {
 	// Checked before anything that talks to the server, so a bad invocation
 	// cannot leave a query behind. --timeout needs no check of its own:
 	// timeoutFlag refuses a negative duration as the flags are parsed.
@@ -66,6 +81,19 @@ func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 	}
 
 	sql, err := readSQL(cmd, args, file)
+	if err != nil {
+		return err
+	}
+
+	// Composed and checked before anything is sent, for the same reason
+	// --name is: a create that reached the server with a broken definition
+	// would leave a query behind to find and fix, and Redash stores one
+	// without complaint.
+	set, err := parseParamFlags(params)
+	if err != nil {
+		return err
+	}
+	definitions, err := paramDefinitions(nil, set, sql, true)
 	if err != nil {
 		return err
 	}
@@ -84,6 +112,15 @@ func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 		return timeoutOr(err, timeout, "the data source lookup")
 	}
 
+	// The definitions travel on the create itself: Redash recomputes the
+	// query hash as it saves and links the result matching it, so a query
+	// born with its defaults picks up the result `rdsh run` just produced.
+	// Setting them afterwards would save the query without them first.
+	var options *redash.QueryOptions
+	if len(definitions) > 0 {
+		options = &redash.QueryOptions{Parameters: definitions}
+	}
+
 	// A create the deadline cuts off is an ordinary timeout: either the
 	// query was never saved, or it was and its ID never arrived, so there
 	// is nothing to report but the expiry.
@@ -92,6 +129,7 @@ func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 		Query:        sql,
 		DataSourceID: dsID,
 		Description:  description,
+		Options:      options,
 	})
 	if err != nil {
 		return timeoutOr(err, timeout, "query")
@@ -122,6 +160,7 @@ func newQueryUpdateCmd(g *globalFlags) *cobra.Command {
 		file        string
 		publish     bool
 		draft       bool
+		params      paramFlagValues
 		timeout     timeoutFlag
 	)
 	cmd := &cobra.Command{
@@ -142,7 +181,7 @@ made in the Redash UI in the meantime fails the command instead of being
 overwritten.`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQueryUpdate(cmd, args, g, name, description, file, publish, draft, timeout.Duration())
+			return runQueryUpdate(cmd, args, g, name, description, file, publish, draft, params, timeout.Duration())
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "rename the saved query")
@@ -150,12 +189,14 @@ overwritten.`,
 	cmd.Flags().StringVarP(&file, "file", "f", "", "read the new SQL from a file")
 	cmd.Flags().BoolVar(&publish, "publish", false, "publish the query, putting it in everyone's query list")
 	cmd.Flags().BoolVar(&draft, "draft", false, "turn the query back into a draft, hiding it from other users")
+	addParamDefinitionFlags(cmd, &params)
 	addTimeoutFlag(cmd, &timeout, serverTimeoutUsage)
 	cmd.MarkFlagsMutuallyExclusive("publish", "draft")
 	return cmd
 }
 
-func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, description, file string, publish, draft bool, timeout time.Duration) error {
+func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, description, file string,
+	publish, draft bool, params paramFlagValues, timeout time.Duration) error {
 	// The SQL argument counts as given by being there at all rather than by
 	// being non-empty as it is in create, so that `update <id> "" -f file`
 	// is the conflict it looks like instead of quietly using the file.
@@ -180,29 +221,40 @@ func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 		return errors.New("--name must not be empty")
 	}
 
+	// Read once so a flag that cannot be read at all costs no request. The
+	// rest of the parameter checking needs the query, and waits for it.
+	set, err := parseParamFlags(params)
+	if err != nil {
+		return err
+	}
+
 	// Which fields to send comes from whether the flag was given rather
 	// than from its value, so that --description "" clears the description
 	// while leaving it out keeps whatever the query has.
 	flags := cmd.Flags()
 	var u redash.QueryUpdate
-	if flags.Changed("name") {
-		u.Name = &name
-	}
-	if flags.Changed("description") {
-		u.Description = &description
-	}
+	// Tracked rather than read back off u: the options an update can carry
+	// are a slice, so u is no longer comparable against an empty one.
+	changed := hasSQL || params.given()
 	if hasSQL {
 		u.Query = &sql
+	}
+	if flags.Changed("name") {
+		u.Name, changed = &name, true
+	}
+	if flags.Changed("description") {
+		u.Description, changed = &description, true
 	}
 	switch {
 	case flags.Changed("publish"):
 		isDraft := !publish
-		u.IsDraft = &isDraft
+		u.IsDraft, changed = &isDraft, true
 	case flags.Changed("draft"):
-		u.IsDraft = &draft
+		u.IsDraft, changed = &draft, true
 	}
-	if u == (redash.QueryUpdate{}) {
-		return errors.New("nothing to change; pass new SQL, --name, --description, --publish, or --draft")
+	if !changed {
+		return errors.New("nothing to change; pass new SQL, --name, --description, --publish, --draft, " +
+			"--param-default, --param-type, or --param-regex")
 	}
 
 	conn, err := resolveConnection(g.profile)
@@ -227,6 +279,27 @@ func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 		return timeoutOr(err, timeout, "query")
 	}
 	u.Version = &current.Version
+
+	// The SQL the definitions are held against is the one the query will
+	// have. Checking it at all is what a metadata-only edit skips: a query
+	// whose parameters have no defaults is the very thing this feature
+	// exists to fix, so renaming one must not be what demands they be
+	// defined first.
+	finalSQL := current.Query
+	if hasSQL {
+		finalSQL = sql
+	}
+	definitions, err := paramDefinitions(current.Options.Parameters, set, finalSQL, hasSQL || params.given())
+	if err != nil {
+		return err
+	}
+	if params.given() {
+		// Redash replaces options wholesale, so what goes back is the whole
+		// object as it was read with the definitions merged into it.
+		options := current.Options
+		options.Parameters = definitions
+		u.Options = &options
+	}
 
 	if _, err := client.UpdateQuery(ctx, id, u); err != nil {
 		if errors.Is(err, redash.ErrQueryVersionConflict) {
