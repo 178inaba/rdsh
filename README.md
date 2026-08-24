@@ -90,11 +90,13 @@ RDSH_URL=https://redash.example.com RDSH_API_KEY=... rdsh run "SELECT 1" --data-
 
 ### Timeouts
 
-`rdsh run`, `rdsh query create`, `rdsh query update`, `rdsh query list`, and `rdsh query show` all take `--timeout`, defaulting to 90s; exceeding it exits with code 124. For `rdsh run` that also cancels the server-side job.
+Every command that talks to Redash takes `--timeout`, defaulting to 90s; exceeding it exits with code 124. `--timeout 0` removes the limit, and a negative duration is refused before anything is sent. For `rdsh run` the expiry also cancels the server-side job.
 
 ```sh
 rdsh run -f heavy.sql --timeout 30m
 ```
+
+On `rdsh auth login` it bounds the verification request alone — the prompts wait for you however long you take. `rdsh profile list` and `rdsh profile use` only read and write the config file, so they take no `--timeout`.
 
 One case exits 1 rather than 124: a `query create` that saved the query but could not publish it, including when the timeout is what stopped the publish. The query exists as a draft, so stderr carries its URL — re-running the command would save a second query.
 
