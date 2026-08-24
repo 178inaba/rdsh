@@ -1007,3 +1007,291 @@ func TestQueryShowTimeoutIsATimeout(t *testing.T) {
 		t.Fatalf("error = %v, want errTimeout", err)
 	}
 }
+
+// storedParameters is the parameter set most of the refresh tests execute
+// against: one with a number default, one with a text default, and one
+// defined without a default at all.
+func storedParameters() []map[string]any {
+	return []map[string]any{
+		{"name": "days", "type": "number", "value": 7},
+		{"name": "team", "type": "text", "value": "core"},
+	}
+}
+
+// assertRefreshedWith checks the parameter values the execution carried.
+func assertRefreshedWith(t *testing.T, f *fakeServer, want map[string]any) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.refreshed == nil {
+		t.Fatal("the query was never executed")
+	}
+	if got := f.refreshed["parameters"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("executed parameters = %#v, want %#v", got, want)
+	}
+}
+
+// TestQueryRefreshPrintsResult covers the plain case: a query with nothing
+// to substitute executes and prints the same rows `rdsh run` would, with
+// stderr left empty because the values it ran with are the query's own.
+func TestQueryRefreshPrintsResult(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	out, errOut, err := runRdshSplit(t, srv, "query", "refresh", "7")
+	if err != nil {
+		t.Fatalf("query refresh error = %v", err)
+	}
+	if out != wantCSV {
+		t.Errorf("output = %q, want %q", out, wantCSV)
+	}
+	if errOut != "" {
+		t.Errorf("stderr = %q, want nothing when the query runs with its own defaults", errOut)
+	}
+	assertRefreshedWith(t, f, map[string]any{})
+}
+
+// TestQueryRefreshSendsStoredDefaults pins the client-side merge Redash
+// makes necessary: the server fills nothing in, so every stored default has
+// to travel with the execution or the placeholder counts as missing. The
+// number arrives as a number — a stringified one would render a different
+// text and leave the query page's result where it was.
+func TestQueryRefreshSendsStoredDefaults(t *testing.T) {
+	f := &fakeServer{savedQueryParameters: storedParameters()}
+	srv := f.start(t)
+
+	out, errOut, err := runRdshSplit(t, srv, "query", "refresh", "7")
+	if err != nil {
+		t.Fatalf("query refresh error = %v", err)
+	}
+	if out != wantCSV {
+		t.Errorf("output = %q, want %q", out, wantCSV)
+	}
+	if errOut != "" {
+		t.Errorf("stderr = %q, want nothing when the query runs with its own defaults", errOut)
+	}
+	assertRefreshedWith(t, f, map[string]any{"days": float64(7), "team": "core"})
+}
+
+// TestQueryRefreshParamOverrides covers --param: it replaces the stored
+// default for the execution, and everything after the first = is the value.
+func TestQueryRefreshParamOverrides(t *testing.T) {
+	f := &fakeServer{savedQueryParameters: storedParameters()}
+	srv := f.start(t)
+
+	if _, _, err := runRdshSplit(t, srv, "query", "refresh", "7",
+		"--param", "days=30", "--param", "team=data=platform"); err != nil {
+		t.Fatalf("query refresh error = %v", err)
+	}
+	assertRefreshedWith(t, f, map[string]any{"days": "30", "team": "data=platform"})
+}
+
+// TestQueryRefreshParamForAnUndefinedParameter covers the queries `rdsh
+// query create` saves: they carry no parameter definitions at all, so a
+// --param the query knows nothing about is the only way their placeholders
+// are ever filled and has to travel as it is.
+func TestQueryRefreshParamForAnUndefinedParameter(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	if _, _, err := runRdshSplit(t, srv, "query", "refresh", "7", "--param", "since=2026-01-01"); err != nil {
+		t.Fatalf("query refresh error = %v", err)
+	}
+	assertRefreshedWith(t, f, map[string]any{"since": "2026-01-01"})
+}
+
+// TestQueryRefreshNoticeOnOverride pins the caveat the command exists to
+// make visible: an execution whose values are not the query's own still
+// returns data, but the result everyone else sees does not move. The notice
+// goes to stderr and the run still succeeds, so stdout stays parseable as
+// the result alone.
+func TestQueryRefreshNoticeOnOverride(t *testing.T) {
+	tests := []struct {
+		name       string
+		parameters []map[string]any
+		param      string
+	}{
+		{name: "value differs from the stored default", parameters: storedParameters(), param: "days=30"},
+		{
+			name:       "parameter defined without a stored default",
+			parameters: []map[string]any{{"name": "since", "type": "date", "value": nil}},
+			param:      "since=2026-01-01",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeServer{savedQueryParameters: tt.parameters}
+			srv := f.start(t)
+
+			out, errOut, err := runRdshSplit(t, srv, "query", "refresh", "7", "--param", tt.param)
+			if err != nil {
+				t.Fatalf("query refresh error = %v", err)
+			}
+			if out != wantCSV {
+				t.Errorf("output = %q, want the result alone on stdout", out)
+			}
+			if !strings.Contains(errOut, "stored defaults") {
+				t.Errorf("stderr = %q, want a notice that the query page keeps its previous result", errOut)
+			}
+			if lines := strings.Count(errOut, "\n"); lines != 1 {
+				t.Errorf("stderr = %q, want a single line", errOut)
+			}
+		})
+	}
+}
+
+// TestQueryRefreshNoticeUnderJSON pins that the notice is not tied to the
+// row formats: it is on stderr, so the stdout contract is untouched
+// whichever --format the caller picked.
+func TestQueryRefreshNoticeUnderJSON(t *testing.T) {
+	f := &fakeServer{savedQueryParameters: storedParameters()}
+	srv := f.start(t)
+
+	out, errOut, err := runRdshSplit(t, srv, "query", "refresh", "7", "--param", "days=30", "--format", "json")
+	if err != nil {
+		t.Fatalf("query refresh error = %v", err)
+	}
+	if !strings.HasPrefix(out, "[") {
+		t.Errorf("output = %q, want the JSON result alone on stdout", out)
+	}
+	if !strings.Contains(errOut, "stored defaults") {
+		t.Errorf("stderr = %q, want the notice under --format json too", errOut)
+	}
+}
+
+// TestQueryRefreshParamMatchingTheDefault covers the boundary the notice
+// turns on: a --param that spells out the stored default is not an override
+// at all, so the execution stays the one the query page makes and no notice
+// is printed. The stored value travels rather than the string it was
+// matched against, so a number stays a number.
+func TestQueryRefreshParamMatchingTheDefault(t *testing.T) {
+	f := &fakeServer{savedQueryParameters: storedParameters()}
+	srv := f.start(t)
+
+	_, errOut, err := runRdshSplit(t, srv, "query", "refresh", "7", "--param", "days=7")
+	if err != nil {
+		t.Fatalf("query refresh error = %v", err)
+	}
+	if errOut != "" {
+		t.Errorf("stderr = %q, want no notice for a value equal to the stored default", errOut)
+	}
+	assertRefreshedWith(t, f, map[string]any{"days": float64(7), "team": "core"})
+}
+
+// TestQueryRefreshMissingParameter covers a placeholder nothing covers: the
+// server refuses the execution, and its message is what says which one. It
+// is an ordinary failure rather than a timeout — re-running unchanged would
+// fail the same way.
+func TestQueryRefreshMissingParameter(t *testing.T) {
+	f := &fakeServer{
+		missingParameter:     true,
+		savedQueryParameters: []map[string]any{{"name": "since", "type": "date", "value": nil}},
+	}
+	srv := f.start(t)
+
+	_, err := runRdsh(t, srv, "", "query", "refresh", "7")
+	if err == nil {
+		t.Fatal("error = nil, want the execution refused")
+	}
+	if errors.Is(err, errTimeout) {
+		t.Errorf("error = %v, want an ordinary failure", err)
+	}
+	if !strings.Contains(err.Error(), "Missing parameter value for: since") {
+		t.Errorf("error = %v, want the server's missing-parameter message", err)
+	}
+	// The parameter carries no stored default, so nothing was invented for
+	// it: leaving it out is what makes the server name it.
+	assertRefreshedWith(t, f, map[string]any{})
+}
+
+// TestQueryRefreshRejectsMalformedParam pins that a --param with no name to
+// bind to is caught before anything is sent, rather than reaching the
+// server as a parameter set that is missing one.
+func TestQueryRefreshRejectsMalformedParam(t *testing.T) {
+	tests := []struct {
+		name  string
+		param string
+	}{
+		{name: "no separator", param: "days"},
+		{name: "empty name", param: "=30"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeServer{}
+			srv := f.start(t)
+
+			_, err := runRdsh(t, srv, "", "query", "refresh", "7", "--param", tt.param)
+			if err == nil {
+				t.Fatal("error = nil, want the malformed --param refused")
+			}
+			if !strings.Contains(err.Error(), tt.param) {
+				t.Errorf("error = %v, want it to quote the value it refused", err)
+			}
+			assertNothingSent(t, f)
+		})
+	}
+}
+
+// TestQueryRefreshTarget covers the forms the argument takes end to end,
+// the way TestQueryShowTarget does for show.
+func TestQueryRefreshTarget(t *testing.T) {
+	tests := []struct {
+		name   string
+		target string // %s stands in for the query's URL on the fake
+	}{
+		{name: "id", target: "7"},
+		{name: "url", target: "%s"},
+		{name: "url copied from the source view", target: "%s/source"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeServer{}
+			srv := f.start(t)
+
+			target := strings.Replace(tt.target, "%s", savedQueryURL(srv), 1)
+			out, err := runRdsh(t, srv, "", "query", "refresh", target)
+			if err != nil {
+				t.Fatalf("query refresh error = %v", err)
+			}
+			if out != wantCSV {
+				t.Errorf("output = %q, want %q", out, wantCSV)
+			}
+		})
+	}
+}
+
+// TestQueryRefreshTimeoutCancelsJob pins the exit code contract and what it
+// promises: the deadline stops the wait, the server-side job is cancelled
+// rather than left running, and 124 says re-running is safe.
+func TestQueryRefreshTimeoutCancelsJob(t *testing.T) {
+	f := &fakeServer{neverDone: true}
+	srv := f.start(t)
+
+	_, err := runRdsh(t, srv, "", "query", "refresh", "7", "--timeout", "50ms")
+	if !errors.Is(err, errTimeout) {
+		t.Fatalf("error = %v, want errTimeout", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.cancelled {
+		t.Error("job was not cancelled on the server")
+	}
+}
+
+// TestQueryRefreshReadTimeoutIsATimeout covers the other server call the
+// command makes: the read that supplies the stored defaults. It leaves the
+// query as it was, so a deadline there is a timeout too.
+func TestQueryRefreshReadTimeoutIsATimeout(t *testing.T) {
+	f := &fakeServer{hangGet: true}
+	srv := f.start(t)
+
+	_, err := runRdsh(t, srv, "", "query", "refresh", "7", "--timeout", "50ms")
+	if !errors.Is(err, errTimeout) {
+		t.Fatalf("error = %v, want errTimeout", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.refreshed != nil {
+		t.Errorf("executed body = %v, want no execution after the read timed out", f.refreshed)
+	}
+}

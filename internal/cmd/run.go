@@ -38,7 +38,7 @@ given. The result cache is always bypassed.`,
 	cmd.Flags().StringVarP(&file, "file", "f", "", "read SQL from a file")
 	cmd.Flags().StringVar(&dataSource, "data-source", "", "data source ID or name (default: the profile's data source)")
 	cmd.Flags().Var(&outputFormat, "format", "output format: csv, tsv, or json")
-	addTimeoutFlag(cmd, &timeout, "cancel the query after this duration (0 = no limit)")
+	addTimeoutFlag(cmd, &timeout, jobTimeoutUsage)
 	return cmd
 }
 

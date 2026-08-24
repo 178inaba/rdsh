@@ -271,11 +271,16 @@ func (f *timeoutFlag) Set(s string) error {
 	return nil
 }
 
-// serverTimeoutUsage describes --timeout for a command that only waits on
-// an answer. run says something else because it has a server-side job to
-// cancel, and auth login because what it waits on is the verification;
-// everything else shares this wording rather than restating it.
-const serverTimeoutUsage = "give up on the server after this duration (0 = no limit)"
+// Two wordings for --timeout, one per kind of wait. jobTimeoutUsage is for
+// the commands that execute a query and so have a server-side job to
+// cancel; serverTimeoutUsage is for the ones that only wait on an answer.
+// auth login says something else again, because what it waits on is the
+// verification; everything else shares one of these rather than restating
+// it.
+const (
+	jobTimeoutUsage    = "cancel the query after this duration (0 = no limit)"
+	serverTimeoutUsage = "give up on the server after this duration (0 = no limit)"
+)
 
 // addTimeoutFlag registers --timeout on cmd. The name, the type and the
 // default are one contract across every command that talks to the server.
