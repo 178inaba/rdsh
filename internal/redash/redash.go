@@ -124,8 +124,10 @@ const parametersKey = "parameters"
 // plain json.Unmarshal would turn a numeric default into a float64 and lose
 // the text QueryParameter.Value promises to reproduce.
 func (o *QueryOptions) UnmarshalJSON(data []byte) error {
+	// The keys are taken as raw JSON, which needs no number handling of its
+	// own; each value that becomes a Go type goes through decodeJSON below.
 	var raw map[string]json.RawMessage
-	if err := decodeJSON(data, &raw); err != nil {
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	// A null options key reaches a custom UnmarshalJSON where it would have
@@ -135,7 +137,7 @@ func (o *QueryOptions) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	if params, ok := raw[parametersKey]; ok {
-		if err := decodeJSON(params, &o.Parameters); err != nil {
+		if err := decodeJSON(bytes.NewReader(params), &o.Parameters); err != nil {
 			return err
 		}
 		delete(raw, parametersKey)
@@ -181,27 +183,31 @@ type QueryParameter struct {
 	Extra map[string]json.RawMessage
 }
 
-// The QueryParameter keys with a field of their own, held out of Extra the
-// way parametersKey is for the options object.
-var parameterKeys = []string{"name", "title", "type", "value", "regex"}
-
 // UnmarshalJSON decodes one definition, keeping the keys rdsh has no field
 // for. It builds its own decoder for the same reason QueryOptions does.
 func (p *QueryParameter) UnmarshalJSON(data []byte) error {
 	var raw map[string]json.RawMessage
-	if err := decodeJSON(data, &raw); err != nil {
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	fields := []any{&p.Name, &p.Title, &p.Type, &p.Value, &p.Regex}
-	for i, key := range parameterKeys {
+	// Each key a field claims is taken out of raw, so what is left over is
+	// exactly what Extra has to carry.
+	take := func(key string, out any) error {
 		value, ok := raw[key]
 		if !ok {
-			continue
-		}
-		if err := decodeJSON(value, fields[i]); err != nil {
-			return err
+			return nil
 		}
 		delete(raw, key)
+		return decodeJSON(bytes.NewReader(value), out)
+	}
+	if err := errors.Join(
+		take("name", &p.Name),
+		take("title", &p.Title),
+		take("type", &p.Type),
+		take("value", &p.Value),
+		take("regex", &p.Regex),
+	); err != nil {
+		return err
 	}
 	if len(raw) > 0 {
 		p.Extra = raw
@@ -214,30 +220,39 @@ func (p *QueryParameter) UnmarshalJSON(data []byte) error {
 // where an absent one falls back to the name, and a null value reads as
 // "no default" exactly as an absent one does.
 func (p QueryParameter) MarshalJSON() ([]byte, error) {
-	raw := make(map[string]json.RawMessage, len(p.Extra)+len(parameterKeys))
+	raw := make(map[string]json.RawMessage, len(p.Extra)+5)
 	for k, v := range p.Extra {
 		raw[k] = v
 	}
-	values := []any{p.Name, p.Title, p.Type, p.Value, p.Regex}
-	for i, key := range parameterKeys {
-		if values[i] == nil || values[i] == "" {
-			continue
+	put := func(key string, value any) error {
+		if value == nil || value == "" {
+			return nil
 		}
-		value, err := json.Marshal(values[i])
+		encoded, err := json.Marshal(value)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		raw[key] = value
+		raw[key] = encoded
+		return nil
+	}
+	if err := errors.Join(
+		put("name", p.Name),
+		put("title", p.Title),
+		put("type", p.Type),
+		put("value", p.Value),
+		put("regex", p.Regex),
+	); err != nil {
+		return nil, err
 	}
 	return json.Marshal(raw)
 }
 
 // decodeJSON decodes one JSON value with numbers kept as json.Number, which
-// is what every decoding in this package does; the custom UnmarshalJSON
-// methods above need it spelled out because encoding/json does not pass the
-// setting down to them.
-func decodeJSON(data []byte, out any) error {
-	dec := json.NewDecoder(bytes.NewReader(data))
+// is what every decoding in this package does: responses through do, and the
+// custom UnmarshalJSON methods above, which have to spell it out because
+// encoding/json does not pass the setting down to them.
+func decodeJSON(r io.Reader, out any) error {
+	dec := json.NewDecoder(r)
 	dec.UseNumber()
 	return dec.Decode(out)
 }
@@ -612,11 +627,9 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if out == nil {
 		return nil
 	}
-	dec := json.NewDecoder(resp.Body)
-	// Keep numbers as json.Number so large integers survive the round trip
-	// to CSV/JSON output instead of degrading to float64.
-	dec.UseNumber()
-	if err := dec.Decode(out); err != nil {
+	// Numbers stay json.Number so large integers survive the round trip to
+	// CSV/JSON output instead of degrading to float64.
+	if err := decodeJSON(resp.Body, out); err != nil {
 		return fmt.Errorf("%s %s: decode response: %w", method, path, err)
 	}
 	return nil

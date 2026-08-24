@@ -590,17 +590,13 @@ func TestQueryOptionsRoundTrip(t *testing.T) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var sent struct {
-		Options any `json:"options"`
-	}
-	dec := json.NewDecoder(bytes.NewReader(f.updatedRaw))
-	dec.UseNumber()
-	if err := dec.Decode(&sent); err != nil {
-		t.Fatalf("decode sent options: %v", err)
+	sent, ok := decodeNumeric(t, f.updatedRaw).(map[string]any)
+	if !ok {
+		t.Fatalf("update body = %s, want a JSON object", f.updatedRaw)
 	}
 	want := numeric(t, options)
-	if !reflect.DeepEqual(sent.Options, want) {
-		t.Errorf("sent options = %#v, want %#v", sent.Options, want)
+	if !reflect.DeepEqual(sent["options"], want) {
+		t.Errorf("sent options = %#v, want %#v", sent["options"], want)
 	}
 }
 
@@ -641,11 +637,19 @@ func numeric(t *testing.T, v any) any {
 	if err != nil {
 		t.Fatalf("marshal want: %v", err)
 	}
+	return decodeNumeric(t, data)
+}
+
+// decodeNumeric reads JSON the way the client does, keeping numbers as the
+// text they were written with — which is what makes a default too large for
+// a float64 comparable at all.
+func decodeNumeric(t *testing.T, data []byte) any {
+	t.Helper()
 	var out any
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	if err := dec.Decode(&out); err != nil {
-		t.Fatalf("decode want: %v", err)
+		t.Fatalf("decode %s: %v", data, err)
 	}
 	return out
 }

@@ -33,18 +33,23 @@ var dateParamLayouts = map[string]string{
 	paramTypeDateTimeSec: "2006-01-02 15:04:05",
 }
 
-// scalarParamTypes is the same set again, as a lookup. A type outside it is
-// one rdsh refuses to write — including on an entry that already carries it,
-// since rewriting a definition that cannot be expressed would silently drop
-// the fields that make it work.
-var scalarParamTypes = map[string]bool{
-	paramTypeText:        true,
-	paramTypeTextPattern: true,
-	paramTypeNumber:      true,
-	paramTypeDate:        true,
-	paramTypeDateTime:    true,
-	paramTypeDateTimeSec: true,
-}
+// scalarParamTypeNames is the same set in the order --param-type's help and
+// errors list them, and the source the lookup below is built from so the two
+// cannot name different sets.
+var scalarParamTypeNames = []string{paramTypeText, paramTypeTextPattern, paramTypeNumber,
+	paramTypeDate, paramTypeDateTime, paramTypeDateTimeSec}
+
+// scalarParamTypes is that list as a lookup. A type outside it is one rdsh
+// refuses to write — including on an entry that already carries it, since
+// rewriting a definition that cannot be expressed would silently drop the
+// fields that make it work.
+var scalarParamTypes = func() map[string]bool {
+	types := make(map[string]bool, len(scalarParamTypeNames))
+	for _, name := range scalarParamTypeNames {
+		types[name] = true
+	}
+	return types
+}()
 
 // paramFlagValues is the raw --param-* input of one invocation, in the order
 // the flags were given.
@@ -88,13 +93,11 @@ type paramFlagSet struct {
 // checking needs the query, and lives in paramDefinitions.
 func parseParamFlags(v paramFlagValues) (*paramFlagSet, error) {
 	set := &paramFlagSet{byName: map[string]*paramFlags{}}
-	// Each is split at the first =, so everything after it is the value and
-	// a pattern carrying an = needs no escape of its own.
 	take := func(flag string, tokens []string, apply func(*paramFlags, string) error) error {
 		for _, token := range tokens {
-			name, value, ok := strings.Cut(token, "=")
-			if !ok || name == "" {
-				return fmt.Errorf("%s %q has no parameter name to bind to; pass it as name=value", flag, token)
+			name, value, err := splitParamToken(flag, token)
+			if err != nil {
+				return err
 			}
 			f := set.byName[name]
 			if f == nil {
@@ -127,7 +130,7 @@ func parseParamFlags(v paramFlagValues) (*paramFlagSet, error) {
 		}
 		if !scalarParamTypes[value] {
 			return fmt.Errorf("%q is not a parameter type rdsh can define (%s); "+
-				"the Redash UI defines the rest", value, strings.Join(scalarParamTypeNames(), ", "))
+				"the Redash UI defines the rest", value, strings.Join(scalarParamTypeNames, ", "))
 		}
 		f.typ, f.hasType = value, true
 		return nil
@@ -159,13 +162,6 @@ func parseParamFlags(v paramFlagValues) (*paramFlagSet, error) {
 		}
 	}
 	return set, nil
-}
-
-// scalarParamTypeNames lists the definable types for an error message, in a
-// fixed order rather than the map's.
-func scalarParamTypeNames() []string {
-	return []string{paramTypeText, paramTypeTextPattern, paramTypeNumber,
-		paramTypeDate, paramTypeDateTime, paramTypeDateTimeSec}
 }
 
 // paramDefinitions composes the parameter definitions one invocation saves,

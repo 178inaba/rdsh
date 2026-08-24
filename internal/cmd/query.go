@@ -259,9 +259,16 @@ func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 	// while leaving it out keeps whatever the query has.
 	flags := cmd.Flags()
 	var u redash.QueryUpdate
-	// Tracked rather than read back off u: the options an update can carry
-	// are a slice, so u is no longer comparable against an empty one.
-	changed := hasSQL || params.given()
+	// Tracked rather than read back off u: the parameter definitions can
+	// only be composed once the query has been read, so u still looks empty
+	// here for an invocation that passes nothing but a --param-* flag.
+	// Whether the SQL is held to the coverage check is decided here rather
+	// than beside the check itself, so the flags that follow cannot widen
+	// it: renaming a query must not be what demands its parameters be
+	// defined.
+	definesParams := params.given()
+	checkSQL := hasSQL || definesParams
+	changed := checkSQL
 	if hasSQL {
 		u.Query = &sql
 	}
@@ -315,11 +322,11 @@ func runQueryUpdate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 	if hasSQL {
 		finalSQL = sql
 	}
-	definitions, err := paramDefinitions(current.Options.Parameters, set, finalSQL, hasSQL || params.given())
+	definitions, err := paramDefinitions(current.Options.Parameters, set, finalSQL, checkSQL)
 	if err != nil {
 		return err
 	}
-	if params.given() {
+	if definesParams {
 		// Redash replaces options wholesale, so what goes back is the whole
 		// object as it was read with the definitions merged into it.
 		options := current.Options
@@ -672,20 +679,31 @@ func runQueryRefresh(cmd *cobra.Command, args []string, g *globalFlags, params [
 }
 
 // parseQueryParams reads the --param values into the overrides the
-// execution applies. Each is split at the first = and everything after it
-// is the value, which needs no escaping of its own: a Redash parameter name
-// cannot contain one. A name given twice takes its last value, as a flag
-// bound to a single variable would.
+// execution applies. A name given twice takes its last value, as a flag
+// bound to a single variable would — unlike the --param-* flags that define
+// a parameter, where a repeat is refused rather than resolved.
 func parseQueryParams(params []string) (map[string]string, error) {
 	overrides := make(map[string]string, len(params))
 	for _, p := range params {
-		name, value, ok := strings.Cut(p, "=")
-		if !ok || name == "" {
-			return nil, fmt.Errorf("--param %q has no parameter name to bind to; pass it as name=value", p)
+		name, value, err := splitParamToken("--param", p)
+		if err != nil {
+			return nil, err
 		}
 		overrides[name] = value
 	}
 	return overrides, nil
+}
+
+// splitParamToken reads one name=value token of a parameter flag. The split
+// is at the first =, so everything after it is the value and needs no
+// escaping of its own: a Redash parameter name cannot contain one, and a
+// pattern very well may.
+func splitParamToken(flag, token string) (string, string, error) {
+	name, value, ok := strings.Cut(token, "=")
+	if !ok || name == "" {
+		return "", "", fmt.Errorf("%s %q has no parameter name to bind to; pass it as name=value", flag, token)
+	}
+	return name, value, nil
 }
 
 // mergeParameters returns the values to execute the saved query with, and
