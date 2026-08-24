@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/178inaba/rdsh/internal/config"
 )
@@ -130,10 +131,12 @@ func authLoginAnswers(srvURL string) []string {
 // prompt on its own and the command would abort with or without the fix
 // under test.
 type scriptedStdin struct {
-	answers     []string // each ends with "\n"
-	interruptAt int
-	interrupt   func()
-	release     <-chan struct{} // closed by the test, releasing a parked read
+	answers []string // each ends with "\n"
+	// before runs just before the read at that index is served, which is
+	// how a test puts something between two prompts: an interrupt, or a
+	// pause long enough to outlast a deadline.
+	before  map[int]func()
+	release <-chan struct{} // closed by the test, releasing a parked read
 
 	reads int
 }
@@ -141,8 +144,8 @@ type scriptedStdin struct {
 func (s *scriptedStdin) Read(p []byte) (int, error) {
 	read := s.reads
 	s.reads++
-	if read == s.interruptAt {
-		s.interrupt()
+	if before, ok := s.before[read]; ok {
+		before()
 	}
 	if read < len(s.answers) {
 		return copy(p, s.answers[read]), nil
@@ -151,23 +154,20 @@ func (s *scriptedStdin) Read(p []byte) (int, error) {
 	return 0, io.EOF
 }
 
-func newScriptedStdin(t *testing.T, interrupt func(), interruptAt int, answers []string) *scriptedStdin {
+// newScriptedStdin answers the prompts in order, running whatever before
+// holds for a prompt as that prompt is read.
+func newScriptedStdin(t *testing.T, answers []string, before map[int]func()) *scriptedStdin {
 	t.Helper()
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
-	return &scriptedStdin{
-		answers:     answers,
-		interruptAt: interruptAt,
-		interrupt:   interrupt,
-		release:     release,
-	}
+	return &scriptedStdin{answers: answers, before: before, release: release}
 }
 
 // newInterruptedStdin answers the prompts in order and then interrupts at
 // the next one, standing in for a user who presses Ctrl-C instead of typing.
 func newInterruptedStdin(t *testing.T, interrupt func(), answers ...string) *scriptedStdin {
 	t.Helper()
-	return newScriptedStdin(t, interrupt, len(answers), answers)
+	return newScriptedStdin(t, answers, map[int]func(){len(answers): interrupt})
 }
 
 // assertInterrupted checks what an interrupted run looks like below
@@ -297,7 +297,7 @@ func TestAuthLoginInterruptedWithFinalAnswerSavesNothing(t *testing.T) {
 
 	// Interrupt as the final answer is served, rather than in place of it.
 	answers := authLoginAnswers(srv.URL)
-	stdin := newScriptedStdin(t, cancel, len(answers)-1, answers)
+	stdin := newScriptedStdin(t, answers, map[int]func(){len(answers) - 1: cancel})
 	out, err := runRdshWithStdin(t, ctx, stdin, "auth", "login")
 	assertInterrupted(t, out, err)
 	assertConfigUnchanged(t, nil)
@@ -425,5 +425,109 @@ func TestDataSourceList(t *testing.T) {
 	}
 	if want := "7\twarehouse\n"; out != want {
 		t.Errorf("output = %q, want %q", out, want)
+	}
+}
+
+// TestDataSourceListTimeout covers the wedged server the listing used to
+// block on forever: the deadline has to end the run, and say what it was
+// waiting for.
+func TestDataSourceListTimeout(t *testing.T) {
+	f := &fakeServer{hangList: true}
+	srv := f.start(t)
+
+	_, err := runRdshIn(t, t.TempDir(), srv, "", "data-source", "list", "--timeout", "50ms")
+	if !errors.Is(err, errTimeout) {
+		t.Fatalf("error = %v, want errTimeout", err)
+	}
+	if got := exitCode(err); got != timeoutExitCode {
+		t.Errorf("exitCode(%v) = %d, want %d", err, got, timeoutExitCode)
+	}
+	if !strings.Contains(err.Error(), "data source") {
+		t.Errorf("error = %v, want it to name the operation that timed out", err)
+	}
+}
+
+// TestDataSourceListNegativeTimeout checks that a bad duration is refused
+// before the listing is requested, not after the server has answered it.
+func TestDataSourceListNegativeTimeout(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	_, err := runRdshIn(t, t.TempDir(), srv, "", "data-source", "list", "--timeout", "-5s")
+	if err == nil || !strings.Contains(err.Error(), "negative") {
+		t.Fatalf("error = %v, want negative-timeout error", err)
+	}
+	select {
+	case got := <-f.reached:
+		t.Errorf("the %s request was sent despite the invalid --timeout", got)
+	default:
+	}
+}
+
+// TestDataSourceListUnlimitedTimeout pins that 0 means no limit rather
+// than a deadline that has already passed.
+func TestDataSourceListUnlimitedTimeout(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	out, err := runRdshIn(t, t.TempDir(), srv, "", "data-source", "list", "--timeout", "0")
+	if err != nil {
+		t.Fatalf("data-source list error = %v", err)
+	}
+	if want := "7\twarehouse\n"; out != want {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+}
+
+// TestAuthLoginVerificationTimeout covers a server that takes the
+// connection and never answers the verification. Nothing is saved: the run
+// ends at the deadline instead of hanging on a request no signal but the
+// user's own could end.
+func TestAuthLoginVerificationTimeout(t *testing.T) {
+	f := &fakeServer{hangSession: true}
+	srv := f.start(t)
+	dir := t.TempDir()
+
+	stdin := fmt.Sprintf("%s\nsecret-key\nstaging\n3\n", srv.URL)
+	_, err := runRdshIn(t, dir, nil, stdin, "auth", "login", "--timeout", "50ms")
+	if !errors.Is(err, errTimeout) {
+		t.Fatalf("error = %v, want errTimeout", err)
+	}
+	if got := exitCode(err); got != timeoutExitCode {
+		t.Errorf("exitCode(%v) = %d, want %d", err, got, timeoutExitCode)
+	}
+	assertConfigUnchanged(t, nil)
+}
+
+// TestAuthLoginPromptsOutliveTheTimeout pins that --timeout bounds the
+// verification alone. The prompt before it would fail if the whole run were
+// bounded, and the one after it if the derived context replaced the
+// command's own; both take twice the deadline to answer, and the login must
+// still save the profile.
+func TestAuthLoginPromptsOutliveTheTimeout(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+	dir := t.TempDir()
+	setRdshEnv(t, dir, nil)
+
+	// Long enough that a prompt sharing the verification's deadline would
+	// have given up on the user by the time the answer arrives.
+	const timeout = 200 * time.Millisecond
+	dawdle := func() { time.Sleep(2 * timeout) }
+	// The profile name prompt, which runs before the verification, and the
+	// data source prompt, which runs after it.
+	stdin := newScriptedStdin(t, authLoginAnswers(srv.URL), map[int]func(){2: dawdle, 3: dawdle})
+
+	out, err := runRdshWithStdin(t, context.Background(), stdin, "auth", "login", "--timeout", timeout.String())
+	if err != nil {
+		t.Fatalf("auth login error = %v (output: %s)", err, out)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if _, ok := cfg.Profiles["staging"]; !ok {
+		t.Errorf("profiles = %v, want the answered profile saved", cfg.Profiles)
 	}
 }

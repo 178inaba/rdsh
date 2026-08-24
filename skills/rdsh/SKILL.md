@@ -56,7 +56,7 @@ That is how a shared query is answered with current data — the saved query's o
 
 ## Timeouts and exit codes
 
-- `rdsh run` and the `rdsh query` subcommands take `--timeout`, defaulting to 90 s, which suits synchronous runs. Exit code 124 means the deadline expired (on `rdsh run`, the server-side job is cancelled best-effort): re-run with a longer `--timeout` (e.g. `10m`) in a background shell. `--timeout 0` (unlimited) is for background runs only.
+- Every command that talks to Redash takes `--timeout`, defaulting to 90 s, which suits synchronous runs. Exit code 124 means the deadline expired (on `rdsh run`, the server-side job is cancelled best-effort): re-run with a longer `--timeout` (e.g. `10m`) in a background shell. `--timeout 0` (unlimited) is for background runs only. Nothing waits on the server without a deadline, so a wedged instance ends a run rather than hanging it.
 - A `rdsh query create` that saved the query but failed to publish it exits 1, not 124 — including when a `--timeout` expiry is what stopped the publish. Its stderr carries the query's URL: the query exists as a draft, so do not re-run the command, which would save a second one.
 - Any other failure exits 1. Read stderr before acting: a SQL error means fix the query; an auth, network, or configuration error means fix the environment or stop and report. Neither is solved by retrying with a longer timeout.
 - An interrupt (Ctrl-C or `SIGTERM`) is not a failure and prints nothing: rdsh terminates by the signal, which a shell reports as 130 or 143. Do not retry — someone asked the run to stop.

@@ -50,6 +50,7 @@ type fakeServer struct {
 	mu              sync.Mutex
 	neverDone       bool // job stays PENDING forever; used by timeout tests
 	rejectSession   bool // GET /api/session returns 401; used by login tests
+	hangSession     bool // GET /api/session never answers
 	hangCancel      bool // DELETE /api/jobs/... never answers
 	hangList        bool // GET /api/data_sources never answers
 	hangCreate      bool // POST /api/queries never answers
@@ -182,6 +183,10 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 		if reject {
 			w.WriteHeader(http.StatusUnauthorized)
 			mustJSON(w, map[string]any{"message": "Couldn't find resource. Please login and try again."})
+			return
+		}
+		if f.hangSession {
+			f.park(r)
 			return
 		}
 		mustJSON(w, map[string]any{"id": 1})
@@ -496,5 +501,88 @@ func TestExitCodeMapping(t *testing.T) {
 	}
 	if got := exitCode(errors.New("boom")); got != 1 {
 		t.Errorf("exitCode(other) = %d, want 1", got)
+	}
+}
+
+// TestTimeoutFlagRejectsNegative covers the guard every command used to
+// carry itself, now that it runs while the flags are parsed. The message
+// carries no flag name because pflag prefixes one.
+func TestTimeoutFlagRejectsNegative(t *testing.T) {
+	var f timeoutFlag
+	if err := f.Set("-5s"); err == nil || !strings.Contains(err.Error(), "negative") {
+		t.Errorf("Set(-5s) error = %v, want it to refuse a negative duration", err)
+	}
+	if err := f.Set("3s"); err != nil {
+		t.Fatalf("Set(3s) error = %v", err)
+	}
+	if got := f.Duration(); got != 3*time.Second {
+		t.Errorf("Duration() = %s, want 3s", got)
+	}
+}
+
+// TestWithTimeout pins what --timeout 0 means: no deadline at all, rather
+// than one that has already expired.
+func TestWithTimeout(t *testing.T) {
+	ctx, cancel := withTimeout(context.Background(), 0)
+	defer cancel()
+	if deadline, ok := ctx.Deadline(); ok {
+		t.Errorf("a zero timeout set a deadline of %s, want none", deadline)
+	}
+
+	bounded, cancelBounded := withTimeout(context.Background(), time.Minute)
+	defer cancelBounded()
+	if _, ok := bounded.Deadline(); !ok {
+		t.Error("a positive timeout set no deadline")
+	}
+}
+
+// TestTimeoutFlagContract walks the tree so that every command talking to
+// Redash is held to one --timeout: the same name, type and 90 s default,
+// applied without a caller passing anything. The profile commands only read
+// and write the config file, so a flag there would silently do nothing.
+func TestTimeoutFlagContract(t *testing.T) {
+	bounded := [][]string{
+		{"run"},
+		{"query", "create"},
+		{"query", "update"},
+		{"query", "list"},
+		{"query", "show"},
+		{"data-source", "list"},
+		{"auth", "login"},
+	}
+	unbounded := [][]string{{"profile", "list"}, {"profile", "use"}}
+
+	root, _ := newRootCmd()
+	for _, path := range bounded {
+		cmd, _, err := root.Find(path)
+		if err != nil {
+			t.Errorf("Find(%v) error = %v", path, err)
+			continue
+		}
+		flag := cmd.Flags().Lookup("timeout")
+		if flag == nil {
+			t.Errorf("%s has no --timeout", cmd.CommandPath())
+			continue
+		}
+		if want := defaultTimeout.String(); flag.DefValue != want {
+			t.Errorf("%s --timeout default = %s, want %s", cmd.CommandPath(), flag.DefValue, want)
+		}
+		// The type rather than Type(), which DurationVar also reports as
+		// "duration": registered that way the flag would look identical
+		// here and take a negative duration, which withTimeout reads as no
+		// limit at all.
+		if _, ok := flag.Value.(*timeoutFlag); !ok {
+			t.Errorf("%s --timeout is a %T, want a *timeoutFlag", cmd.CommandPath(), flag.Value)
+		}
+	}
+	for _, path := range unbounded {
+		cmd, _, err := root.Find(path)
+		if err != nil {
+			t.Errorf("Find(%v) error = %v", path, err)
+			continue
+		}
+		if cmd.Flags().Lookup("timeout") != nil {
+			t.Errorf("%s has a --timeout, which would do nothing", cmd.CommandPath())
+		}
 	}
 }

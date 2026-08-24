@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -227,6 +228,88 @@ func exitCode(err error) int {
 	default:
 		return 1
 	}
+}
+
+// defaultTimeout bounds every command that talks to Redash unless
+// --timeout says otherwise.
+const defaultTimeout = 90 * time.Second
+
+// errTimeout marks a run aborted by --timeout expiry; exitCode maps it to
+// timeoutExitCode so agents can mechanically distinguish "retry with a
+// longer --timeout" from other failures. Its own text names no operation:
+// the commands that reach it do different things, so timeoutOr's caller
+// says what timed out.
+var errTimeout = errors.New("timed out")
+
+// timeoutFlag is the value type every --timeout is registered with. A
+// pflag.Value rather than DurationVar so a negative duration is refused
+// while cobra parses the flags — the same place format.Format refuses a
+// typo — which is both earlier than any guard in a RunE and one place
+// rather than seven.
+type timeoutFlag time.Duration
+
+func (f timeoutFlag) Duration() time.Duration { return time.Duration(f) }
+
+func (f timeoutFlag) String() string { return time.Duration(f).String() }
+
+// Type names the value shown in the --timeout help line. It reports what
+// DurationVar reports, since the help text is part of the agent-facing
+// contract.
+func (timeoutFlag) Type() string { return "duration" }
+
+// Set reports only what is wrong with the value; pflag prefixes the flag
+// and the argument it was given.
+func (f *timeoutFlag) Set(s string) error {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return err
+	}
+	if d < 0 {
+		return fmt.Errorf("must not be negative (got %s)", d)
+	}
+	*f = timeoutFlag(d)
+	return nil
+}
+
+// serverTimeoutUsage describes --timeout for a command that only waits on
+// an answer. run says something else because it has a server-side job to
+// cancel, and auth login because what it waits on is the verification;
+// everything else shares this wording rather than restating it.
+const serverTimeoutUsage = "give up on the server after this duration (0 = no limit)"
+
+// addTimeoutFlag registers --timeout on cmd. The name, the type and the
+// default are one contract across every command that talks to the server.
+// The default is assigned before the flag is registered, which is what
+// pflag reads the displayed default from.
+func addTimeoutFlag(cmd *cobra.Command, timeout *timeoutFlag, usage string) {
+	*timeout = timeoutFlag(defaultTimeout)
+	cmd.Flags().Var(timeout, "timeout", usage)
+}
+
+// withTimeout derives the context the server calls run under. Zero means no
+// limit, so the parent is returned as it is alongside a cancel func that
+// does nothing, and callers need no branch of their own.
+//
+// Each caller derives it where its requests begin rather than at the top of
+// its run function, so that reading SQL from stdin and auth login's prompts
+// stay off the clock.
+func withTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+// timeoutOr reports err as the timeout it is when the deadline is what
+// stopped it, so the run exits timeoutExitCode rather than 1. operation
+// names what was being done, and begins the message. Opting in per call
+// site rather than wrapping on the way out is what leaves query create's
+// publish step free to report its expiry as an ordinary failure.
+func timeoutOr(err error, timeout time.Duration, operation string) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%s %w after %s (use --timeout to allow more time): %v", operation, errTimeout, timeout, err)
+	}
+	return err
 }
 
 // resolveConnection loads the config and applies the profile/env

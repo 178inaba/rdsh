@@ -16,30 +16,12 @@ import (
 	"github.com/178inaba/rdsh/internal/redash"
 )
 
-// errTimeout marks a query aborted by --timeout expiry; Execute maps it to
-// exit code 124 (GNU timeout convention) so agents can mechanically
-// distinguish "retry with a longer --timeout" from other failures.
-var errTimeout = errors.New("query timed out")
-
-const defaultTimeout = 90 * time.Second
-
-// timeoutOr reports err as the timeout it is when the deadline is what
-// stopped it, so the run exits 124 rather than 1. Opting in per call site
-// rather than wrapping on the way out is what leaves query create's publish
-// step free to report its expiry as an ordinary failure.
-func timeoutOr(err error, timeout time.Duration) error {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("%w after %s (use --timeout to allow more time): %v", errTimeout, timeout, err)
-	}
-	return err
-}
-
 func newRunCmd(g *globalFlags) *cobra.Command {
 	var (
 		file         string
 		dataSource   string
 		outputFormat = format.CSV
-		timeout      time.Duration
+		timeout      timeoutFlag
 	)
 	cmd := &cobra.Command{
 		Use:   "run [sql]",
@@ -50,24 +32,21 @@ SQL is taken from the argument, from --file, or from stdin when neither is
 given. The result cache is always bypassed.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRun(cmd, args, g, file, dataSource, outputFormat, timeout)
+			return runRun(cmd, args, g, file, dataSource, outputFormat, timeout.Duration())
 		},
 	}
 	cmd.Flags().StringVarP(&file, "file", "f", "", "read SQL from a file")
 	cmd.Flags().StringVar(&dataSource, "data-source", "", "data source ID or name (default: the profile's data source)")
 	cmd.Flags().Var(&outputFormat, "format", "output format: csv, tsv, or json")
-	cmd.Flags().DurationVar(&timeout, "timeout", defaultTimeout, "cancel the query after this duration (0 = no limit)")
+	addTimeoutFlag(cmd, &timeout, "cancel the query after this duration (0 = no limit)")
 	return cmd
 }
 
 func runRun(cmd *cobra.Command, args []string, g *globalFlags, file, dataSource string, outputFormat format.Format, timeout time.Duration) error {
-	// Fail on a bad --timeout before anything expensive, so it does not let
-	// the query run to completion on the server first. --format needs no
-	// check here: format.Format rejects a typo during flag parsing.
-	if timeout < 0 {
-		return fmt.Errorf("--timeout must not be negative (got %s)", timeout)
-	}
-
+	// Neither flag is checked here: format.Format rejects a typo and
+	// timeoutFlag a negative duration, both while cobra parses the flags,
+	// which is before anything expensive lets the query run to completion on
+	// the server.
 	sql, err := readSQL(cmd, args, file)
 	if err != nil {
 		return err
@@ -79,12 +58,8 @@ func runRun(cmd *cobra.Command, args []string, g *globalFlags, file, dataSource 
 	}
 	client := redash.NewClient(conn.URL, conn.APIKey)
 
-	ctx := cmd.Context()
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
+	ctx, cancel := withTimeout(cmd.Context(), timeout)
+	defer cancel()
 
 	dsID, err := resolveDataSource(ctx, client, dataSource, conn.DataSource)
 	if err != nil {
@@ -93,7 +68,7 @@ func runRun(cmd *cobra.Command, args []string, g *globalFlags, file, dataSource 
 
 	result, err := client.RunQuery(ctx, sql, dsID)
 	if err != nil {
-		return timeoutOr(err, timeout)
+		return timeoutOr(err, timeout, "query")
 	}
 
 	return format.Write(cmd.OutOrStdout(), outputFormat, result)
