@@ -54,9 +54,19 @@ rdsh run -f q.sql
 
 That is how a shared query is answered with current data — the saved query's own stored result is never fetched, so what comes back is always fresh. Use `--format json` instead when the metadata is what is needed (name, description, data source, draft state, URL, and the SQL in one object).
 
+## Refreshing what everyone else sees
+
+`rdsh query show` piped into `rdsh run` answers a question for you alone. The result on the query page — what a colleague opening the URL sees, and what any chart on the query draws from — is Redash's own cached result, and it moves only when the saved query is executed. Use `rdsh query refresh` when the user's goal involves someone else looking at the query afterwards ("update the dashboard", "make sure the chart is current"), and `query show` + `run` when they only want the data in this session.
+
+`query refresh` prints the rows too, so it never needs a second call to see what it produced. Prefer it over saving a near-duplicate query when a colleague's query almost answers the question — refreshing theirs with different `--param` values costs nothing and leaves no clutter behind.
+
+The one thing to check before reporting success: refreshing with parameter values that differ from the ones stored on the query updates nothing on the page. Redash ties an execution to a query by the text it ran, so only a run with the query's own stored defaults advances the shared result. rdsh says so on stderr in that case and still exits 0 — read stderr before telling the user the shared view is current. If they need the overridden values to be what everyone sees, the defaults themselves have to change in the Redash UI (`rdsh query update` edits SQL and metadata, not parameter definitions).
+
+A parameter that has no stored default cannot be filled in by the server, so a query with one fails unless `--param` covers it; the error names the parameter.
+
 ## Timeouts and exit codes
 
-- Every command that talks to Redash takes `--timeout`, defaulting to 90 s, which suits synchronous runs. Exit code 124 means the deadline expired (on `rdsh run`, the server-side job is cancelled best-effort): re-run with a longer `--timeout` (e.g. `10m`) in a background shell. `--timeout 0` (unlimited) is for background runs only. Nothing waits on the server without a deadline, so a wedged instance ends a run rather than hanging it.
+- Every command that talks to Redash takes `--timeout`, defaulting to 90 s, which suits synchronous runs. Exit code 124 means the deadline expired (on `rdsh run` and `rdsh query refresh`, the server-side job is cancelled best-effort): re-run with a longer `--timeout` (e.g. `10m`) in a background shell. `--timeout 0` (unlimited) is for background runs only. Nothing waits on the server without a deadline, so a wedged instance ends a run rather than hanging it.
 - A `rdsh query create` that saved the query but failed to publish it exits 1, not 124 — including when a `--timeout` expiry is what stopped the publish. Its stderr carries the query's URL: the query exists as a draft, so do not re-run the command, which would save a second one.
 - Any other failure exits 1. Read stderr before acting: a SQL error means fix the query; an auth, network, or configuration error means fix the environment or stop and report. Neither is solved by retrying with a longer timeout.
 - An interrupt (Ctrl-C or `SIGTERM`) is not a failure and prints nothing: rdsh terminates by the signal, which a shell reports as 130 or 143. Do not retry — someone asked the run to stop.
