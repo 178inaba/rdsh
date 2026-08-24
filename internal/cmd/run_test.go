@@ -67,6 +67,7 @@ type fakeServer struct {
 	cancelled     bool
 	submitted     bool
 	fetched       bool           // GET /api/queries/<id> arrived
+	listedSources bool           // GET /api/data_sources arrived
 	created       map[string]any // body of POST /api/queries
 	// listed is the query string of every listing request that arrived, in
 	// order, so a test can check both the endpoint and how it was called.
@@ -117,6 +118,9 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("GET /api/data_sources", func(w http.ResponseWriter, r *http.Request) {
 		f.reach(dataSourcesRequest)
+		f.mu.Lock()
+		f.listedSources = true
+		f.mu.Unlock()
 		if f.hangList {
 			f.park(r)
 			return
@@ -433,6 +437,50 @@ func TestRunDataSourceNameNotFound(t *testing.T) {
 	_, err := runRdsh(t, srv, "", "run", "SELECT 1", "--data-source", "nope")
 	if err == nil || !strings.Contains(err.Error(), "nope") {
 		t.Errorf("error = %v, want not-found error naming the data source", err)
+	}
+}
+
+// TestRunDataSourceLookupTimeout covers the deadline expiring while a
+// --data-source name is resolved to an ID. The lookup is a server call like
+// any other, so it has to end the run as a timeout rather than report a bare
+// context error as an ordinary failure — 1 tells an agent that a longer
+// --timeout will not help, which is the one recovery that would.
+func TestRunDataSourceLookupTimeout(t *testing.T) {
+	f := &fakeServer{hangList: true}
+	srv := f.start(t)
+
+	_, err := runRdsh(t, srv, "", "run", "SELECT 1", "--data-source", "warehouse", "--timeout", "50ms")
+	if !errors.Is(err, errTimeout) {
+		t.Fatalf("error = %v, want errTimeout", err)
+	}
+	if got := exitCode(err); got != timeoutExitCode {
+		t.Errorf("exitCode(%v) = %d, want %d", err, got, timeoutExitCode)
+	}
+	// Not "data source", which data-source list's own message carries as
+	// well: the wording has to tell the lookup apart from the listing.
+	if !strings.Contains(err.Error(), "lookup") {
+		t.Errorf("error = %v, want it to name the lookup that timed out", err)
+	}
+}
+
+// TestRunDataSourceByIDSkipsLookup pins what the lookup's new timeout must
+// not change: an all-digit --data-source still resolves without asking the
+// server, so the only expiry it can reach is the query's.
+func TestRunDataSourceByIDSkipsLookup(t *testing.T) {
+	f := &fakeServer{neverDone: true}
+	srv := f.start(t)
+
+	_, err := runRdsh(t, srv, "", "run", "SELECT 1", "--data-source", "5", "--timeout", "50ms")
+	if !errors.Is(err, errTimeout) {
+		t.Fatalf("error = %v, want errTimeout", err)
+	}
+	if !strings.Contains(err.Error(), "query timed out") {
+		t.Errorf("error = %v, want the query's timeout rather than the lookup's", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listedSources {
+		t.Error("the data sources were listed for an all-digit --data-source")
 	}
 }
 

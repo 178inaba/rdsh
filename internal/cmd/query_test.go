@@ -157,6 +157,23 @@ func TestQueryCreateTimeoutIsATimeout(t *testing.T) {
 	}
 }
 
+// TestQueryCreateDataSourceLookupTimeout covers create's half of the gap
+// run's lookup had: resolving a --data-source name is a server call, so a
+// deadline that expires in it is a timeout. Only the code is checked here —
+// the message and the untouched ID path are pinned in
+// TestRunDataSourceLookupTimeout, since both commands resolve the name
+// through the same call.
+func TestQueryCreateDataSourceLookupTimeout(t *testing.T) {
+	f := &fakeServer{hangList: true}
+	srv := f.start(t)
+
+	_, err := runRdsh(t, srv, "", "query", "create", "--name", "signups", "SELECT 1",
+		"--data-source", "warehouse", "--timeout", "50ms")
+	if !errors.Is(err, errTimeout) {
+		t.Fatalf("error = %v, want errTimeout", err)
+	}
+}
+
 // TestQueryCreatePublishTimeoutIsNotATimeout pins the same exception for a
 // publish the --timeout cut off: 124 would tell an agent to re-run as is,
 // and re-running create saves the query twice.
