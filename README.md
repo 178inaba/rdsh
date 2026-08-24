@@ -72,6 +72,21 @@ rdsh run -f signups.sql
 
 `rdsh query show` takes the same ID or URL as `update`. Its `--format` is the one exception to the shared output formats: `json` is the only value it accepts — a multi-line SQL body does not fit a row format — and it prints one object with `id`, `name`, `description`, `data_source_id`, `is_draft`, `url`, and `query`. Without `--format`, the SQL itself is what comes out.
 
+Reading the SQL back and running it returns a result of your own; it does not touch the one Redash shows everyone on the query page. That shared result — and any chart drawn from it — only moves when the saved query is executed, which is what `rdsh query refresh` does. It prints the rows in the same formats as `rdsh run` and refreshes the shared result in the same call:
+
+```sh
+rdsh query refresh 42
+rdsh query refresh https://redash.example.com/queries/42 --format json
+```
+
+Parameters are supplied with `--param name=value`, repeatable; everything after the first `=` is the value. A parameter left out is executed with the default stored on the query, and one with neither a stored default nor a `--param` fails the command, naming itself — Redash substitutes only what the request gives it.
+
+```sh
+rdsh query refresh 42 --param days=30 --param team=core
+```
+
+The shared result only advances when the query runs with its own stored defaults, because Redash matches an execution to a query by the hash of the text it ran. Override a default with `--param`, or cover a parameter that has no stored default, and the execution still succeeds and still prints the rows, but the query page keeps showing what it showed before; a line saying so goes to stderr and the command still exits 0.
+
 Unlike `rdsh run` and `rdsh query create`, `rdsh query update` never reads stdin — SQL is optional there, so falling back to it would turn whatever was piped in into the query. The update also carries the version the query had when it was read, so an edit made in the Redash UI in the meantime fails the command instead of being overwritten; read the query again and re-run.
 
 ### Profiles
@@ -90,7 +105,7 @@ RDSH_URL=https://redash.example.com RDSH_API_KEY=... rdsh run "SELECT 1" --data-
 
 ### Timeouts
 
-Every command that talks to Redash takes `--timeout`, defaulting to 90s; exceeding it exits with code 124. `--timeout 0` removes the limit, and a negative duration is refused before anything is sent. For `rdsh run` the expiry also cancels the server-side job.
+Every command that talks to Redash takes `--timeout`, defaulting to 90s; exceeding it exits with code 124. `--timeout 0` removes the limit, and a negative duration is refused before anything is sent. For the two commands that execute a query — `rdsh run` and `rdsh query refresh` — the expiry also cancels the server-side job.
 
 ```sh
 rdsh run -f heavy.sql --timeout 30m

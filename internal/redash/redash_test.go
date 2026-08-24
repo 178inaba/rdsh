@@ -26,13 +26,18 @@ import (
 type fakeRedash struct {
 	t *testing.T
 
-	mu            sync.Mutex
-	jobStatuses   []int  // consecutive GET /api/jobs responses
-	jobError      string // error field served with status 4
-	pollCount     int
+	mu          sync.Mutex
+	jobStatuses []int  // consecutive GET /api/jobs responses
+	jobError    string // error field served with status 4
+	pollCount   int
+	// submitRefusal is the message POST /api/query_results refuses the
+	// submission with, as a failed job rather than as a message field.
+	submitRefusal string
 	cancelled     bool
 	cancelStatus  int // HTTP status for DELETE, default 200
 	submittedBody map[string]any
+	refreshBody   map[string]any // body of POST /api/queries/7/results
+	queryOptions  map[string]any // options served by GET /api/queries/7
 	createdQuery  map[string]any // body of POST /api/queries
 	updatedQuery  map[string]any // body of POST /api/queries/7
 	queryVersion  int            // version served by GET /api/queries/7
@@ -57,6 +62,13 @@ func (f *fakeRedash) server() *httptest.Server {
 		f.gotAuth = append(f.gotAuth, r.Header.Get("Authorization"))
 		if err := json.NewDecoder(r.Body).Decode(&f.submittedBody); err != nil {
 			f.t.Errorf("decode submitted body: %v", err)
+		}
+		if f.submitRefusal != "" {
+			// The shape run_query refuses with, which is not the
+			// {"message": ...} the rest of the API uses.
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"job": map[string]any{"status": 4, "error": f.submitRefusal}})
+			return
 		}
 		writeJSON(w, map[string]any{"job": map[string]any{"id": "job-1", "status": 1}})
 	})
@@ -122,10 +134,22 @@ func (f *fakeRedash) server() *httptest.Server {
 	mux.HandleFunc("GET /api/queries/7", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		writeJSON(w, map[string]any{
+		query := map[string]any{
 			"id": 7, "name": "saved", "query": "SELECT 1", "data_source_id": 3,
 			"is_draft": true, "version": f.queryVersion,
-		})
+		}
+		if f.queryOptions != nil {
+			query["options"] = f.queryOptions
+		}
+		writeJSON(w, query)
+	})
+	mux.HandleFunc("POST /api/queries/7/results", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if err := json.NewDecoder(r.Body).Decode(&f.refreshBody); err != nil {
+			f.t.Errorf("decode refresh body: %v", err)
+		}
+		writeJSON(w, map[string]any{"job": map[string]any{"id": "job-1", "status": 1}})
 	})
 	mux.HandleFunc("POST /api/queries/7", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -246,6 +270,26 @@ func TestRunQuerySuccess(t *testing.T) {
 		if a != "Key k" {
 			t.Errorf("Authorization = %q, want %q", a, "Key k")
 		}
+	}
+}
+
+// TestRunQueryRefusalCarriesItsMessage pins that a refusal Redash reports
+// as a failed job rather than as a message still reaches the caller as one.
+// run_query answers a paused data source, and a saved query missing a
+// parameter value, with {"job": {"status": 4, "error": ...}} and an HTTP
+// 400; reading the message field alone would leave the caller the status
+// and nothing to act on.
+func TestRunQueryRefusalCarriesItsMessage(t *testing.T) {
+	f := &fakeRedash{t: t, submitRefusal: "warehouse is paused. Please try later."}
+	srv := f.server()
+	defer srv.Close()
+
+	_, err := newTestClient(srv, "k").RunQuery(context.Background(), "SELECT 1", 5)
+	if err == nil {
+		t.Fatal("RunQuery() error = nil, want the server's refusal")
+	}
+	if !strings.Contains(err.Error(), "warehouse is paused") {
+		t.Errorf("RunQuery() error = %v, want it to carry the server's message", err)
 	}
 }
 
@@ -423,6 +467,135 @@ func TestGetQuery(t *testing.T) {
 	}
 	if q.ID != 7 || q.Version != 4 || q.Query != "SELECT 1" || !q.IsDraft {
 		t.Errorf("GetQuery() = %+v, want ID 7, version 4, the saved SQL and is_draft true", q)
+	}
+}
+
+// TestGetQueryOptions covers the half of the read a saved-query execution
+// needs: the stored parameter defaults, which are both what the execution
+// sends and what tells it whether the query page's cached result will
+// advance. The default is kept as it was decoded, so a number stays a
+// number on the way back out.
+func TestGetQueryOptions(t *testing.T) {
+	f := &fakeRedash{t: t, queryOptions: map[string]any{
+		"apply_auto_limit": true,
+		"parameters": []map[string]any{
+			{"name": "days", "type": "number", "value": 7},
+			{"name": "team", "type": "text", "value": "core"},
+			{"name": "since", "type": "date", "value": nil},
+		},
+	}}
+	srv := f.server()
+	defer srv.Close()
+
+	q, err := newTestClient(srv, "k").GetQuery(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetQuery() error = %v", err)
+	}
+	want := []redash.QueryParameter{
+		{Name: "days", Value: json.Number("7")},
+		{Name: "team", Value: "core"},
+		{Name: "since", Value: nil},
+	}
+	if !reflect.DeepEqual(q.Options.Parameters, want) {
+		t.Errorf("Options.Parameters = %+v, want %+v", q.Options.Parameters, want)
+	}
+}
+
+// TestGetQueryWithoutOptions pins that a query carrying no options at all —
+// which is every query `rdsh query create` saves — reads back as one with
+// no parameters rather than failing.
+func TestGetQueryWithoutOptions(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	q, err := newTestClient(srv, "k").GetQuery(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetQuery() error = %v", err)
+	}
+	if len(q.Options.Parameters) != 0 {
+		t.Errorf("Options.Parameters = %+v, want none", q.Options.Parameters)
+	}
+}
+
+func TestRefreshQuery(t *testing.T) {
+	f := &fakeRedash{t: t, jobStatuses: []int{1, 3}}
+	srv := f.server()
+	defer srv.Close()
+
+	got, err := newTestClient(srv, "k").RefreshQuery(context.Background(), 7,
+		map[string]any{"days": json.Number("7"), "team": "core"})
+	if err != nil {
+		t.Fatalf("RefreshQuery() error = %v", err)
+	}
+	if len(got.Rows) != 2 {
+		t.Errorf("len(Rows) = %d, want 2", len(got.Rows))
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// A number default has to arrive as a number: the hash Redash compares
+	// the execution against is taken over the query rendered with the
+	// stored defaults, so a stringified one would run a different text.
+	wantParams := map[string]any{"days": float64(7), "team": "core"}
+	if !reflect.DeepEqual(f.refreshBody["parameters"], wantParams) {
+		t.Errorf("submitted parameters = %#v, want %#v", f.refreshBody["parameters"], wantParams)
+	}
+	if maxAge, ok := f.refreshBody["max_age"]; !ok || maxAge != float64(0) {
+		t.Errorf("submitted max_age = %v (present=%v), want 0", maxAge, ok)
+	}
+	// Absent rather than false: with the key missing the server falls back
+	// to the query's own options.apply_auto_limit, which is the value its
+	// stored hash was taken with. Sending false would run a different text
+	// on any query that has it on.
+	if _, ok := f.refreshBody["apply_auto_limit"]; ok {
+		t.Errorf("submitted apply_auto_limit = %v, want the key left out",
+			f.refreshBody["apply_auto_limit"])
+	}
+}
+
+// TestRefreshQueryWithoutParameters pins that a query with nothing to
+// substitute sends an empty object rather than null: Redash reads the field
+// with a default that a present null defeats, and then fails on it.
+func TestRefreshQueryWithoutParameters(t *testing.T) {
+	f := &fakeRedash{t: t, jobStatuses: []int{3}}
+	srv := f.server()
+	defer srv.Close()
+
+	if _, err := newTestClient(srv, "k").RefreshQuery(context.Background(), 7, nil); err != nil {
+		t.Fatalf("RefreshQuery() error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	params, ok := f.refreshBody["parameters"]
+	if !ok {
+		t.Fatal("submitted body carries no parameters field")
+	}
+	if !reflect.DeepEqual(params, map[string]any{}) {
+		t.Errorf("submitted parameters = %#v, want an empty object", params)
+	}
+}
+
+// TestRefreshQueryContextExpiryCancelsJob pins that an execution submitted
+// by ID reaches the same abandonment RunQuery gets, rather than leaving the
+// job running on the server.
+func TestRefreshQueryContextExpiryCancelsJob(t *testing.T) {
+	f := &fakeRedash{t: t, jobStatuses: []int{1}} // never finishes
+	srv := f.server()
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+
+	_, err := newTestClient(srv, "k").RefreshQuery(ctx, 7, nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RefreshQuery() error = %v, want DeadlineExceeded", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.cancelled {
+		t.Error("job was not cancelled on the server")
 	}
 }
 

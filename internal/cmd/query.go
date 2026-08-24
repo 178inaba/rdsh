@@ -19,7 +19,8 @@ func newQueryCmd(g *globalFlags) *cobra.Command {
 		Use:   "query",
 		Short: "Manage saved queries",
 	}
-	cmd.AddCommand(newQueryCreateCmd(g), newQueryUpdateCmd(g), newQueryListCmd(g), newQueryShowCmd(g))
+	cmd.AddCommand(newQueryCreateCmd(g), newQueryUpdateCmd(g), newQueryListCmd(g),
+		newQueryShowCmd(g), newQueryRefreshCmd(g))
 	return cmd
 }
 
@@ -473,6 +474,164 @@ func writeQueryDetail(w io.Writer, q *redash.Query, url string) error {
 		Query:        q.Query,
 	})
 }
+
+func newQueryRefreshCmd(g *globalFlags) *cobra.Command {
+	var (
+		params       []string
+		outputFormat = format.CSV
+		timeout      timeoutFlag
+	)
+	cmd := &cobra.Command{
+		Use:   "refresh <id|url>",
+		Short: "Execute a saved Redash query and print the fresh result",
+		Long: `Execute a saved Redash query and print the fresh result.
+
+The query is named by its ID or by its URL on the configured Redash
+instance. Unlike ` + "`rdsh query show`" + ` piped into ` + "`rdsh run`" + `, this is the
+execution the query page itself makes: the result Redash shows everyone —
+and any chart drawn from it — is refreshed by the same call that prints the
+rows here. The output is the same as ` + "`rdsh run`" + `'s, csv by default.
+
+--param name=value supplies a parameter value and may be repeated;
+everything after the first = is the value. A parameter left out is executed
+with the default stored on the query, and one with neither a stored default
+nor a --param fails the command, naming itself.
+
+The result everyone else sees only advances when the query runs with its
+own stored defaults. Override one with --param, or cover a parameter that
+has no stored default, and the execution still succeeds and still prints
+the rows, but the query page keeps showing what it showed before; a line
+saying so goes to stderr.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runQueryRefresh(cmd, args, g, params, outputFormat, timeout.Duration())
+		},
+	}
+	cmd.Flags().StringArrayVar(&params, "param", nil,
+		"parameter value as name=value, repeatable (default: the query's stored defaults)")
+	cmd.Flags().Var(&outputFormat, "format", "output format: csv, tsv, or json")
+	addTimeoutFlag(cmd, &timeout, jobTimeoutUsage)
+	return cmd
+}
+
+// staleCacheNotice is what a run that could not advance the query page's
+// result reports. It is a note rather than a failure: the rows on stdout
+// are what was asked for, and stderr is where the listing's truncation note
+// goes for the same reason.
+const staleCacheNotice = "executed with parameter values that differ from the query's stored defaults, " +
+	"so the query page still shows its previous result"
+
+func runQueryRefresh(cmd *cobra.Command, args []string, g *globalFlags, params []string,
+	outputFormat format.Format, timeout time.Duration) error {
+	// Parsed before anything is sent, so a --param that binds to no name
+	// cannot reach the server as a parameter set that is quietly missing
+	// one. --format and --timeout are both checked as the flags are parsed.
+	overrides, err := parseQueryParams(params)
+	if err != nil {
+		return err
+	}
+
+	conn, err := resolveConnection(g.profile)
+	if err != nil {
+		return err
+	}
+	client := redash.NewClient(conn.URL, conn.APIKey)
+	id, err := resolveQueryID(args[0], client)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := withTimeout(cmd.Context(), timeout)
+	defer cancel()
+
+	// Read first for the stored defaults: Redash substitutes only what the
+	// request gives it, so a default the execution leaves out counts as a
+	// missing parameter rather than as the value the query holds.
+	//
+	// Both calls report a deadline as an ordinary timeout. A refresh is an
+	// execution, and the expiry cancels its job, so re-running the command
+	// as it stands is safe — which is what exit code 124 tells an agent to
+	// do.
+	q, err := client.GetQuery(ctx, id)
+	if err != nil {
+		return timeoutOr(err, timeout, "query")
+	}
+
+	values, matchesDefaults := mergeParameters(q.Options.Parameters, overrides)
+	result, err := client.RefreshQuery(ctx, id, values)
+	if err != nil {
+		return timeoutOr(err, timeout, "query")
+	}
+
+	if err := format.Write(cmd.OutOrStdout(), outputFormat, result); err != nil {
+		return err
+	}
+	if !matchesDefaults {
+		fmt.Fprintln(cmd.ErrOrStderr(), staleCacheNotice)
+	}
+	return nil
+}
+
+// parseQueryParams reads the --param values into the overrides the
+// execution applies. Each is split at the first = and everything after it
+// is the value, which needs no escaping of its own: a Redash parameter name
+// cannot contain one. A name given twice takes its last value, as a flag
+// bound to a single variable would.
+func parseQueryParams(params []string) (map[string]string, error) {
+	overrides := make(map[string]string, len(params))
+	for _, p := range params {
+		name, value, ok := strings.Cut(p, "=")
+		if !ok || name == "" {
+			return nil, fmt.Errorf("--param %q has no parameter name to bind to; pass it as name=value", p)
+		}
+		overrides[name] = value
+	}
+	return overrides, nil
+}
+
+// mergeParameters returns the values to execute the saved query with, and
+// reports whether they are the query's own stored defaults — which is what
+// decides whether the result the query page shows everyone advances.
+//
+// A parameter defined without a stored default is left out entirely:
+// sending its null earns a refusal that names no parameter, where leaving
+// it out earns the server's own "missing parameter value for" — which is
+// what tells a caller which one to pass. An override the query knows
+// nothing about is sent as it is, since a query saved by `rdsh query
+// create` carries no parameter definitions at all and its placeholders are
+// reachable no other way.
+func mergeParameters(stored []redash.QueryParameter, overrides map[string]string) (map[string]any, bool) {
+	values := make(map[string]any, len(stored)+len(overrides))
+	for _, p := range stored {
+		if p.Value == nil {
+			continue
+		}
+		values[p.Name] = p.Value
+	}
+
+	matchesDefaults := true
+	for name, override := range overrides {
+		// Reading what is already there is reading the stored default:
+		// each name is a key of overrides, so nothing has replaced it yet.
+		// An override that spells out that default is not one — the stored
+		// value stays, so the request is the one the query page makes down
+		// to the JSON types, and the cached result still moves.
+		if current, ok := values[name]; ok && parameterText(current) == override {
+			continue
+		}
+		values[name] = override
+		matchesDefaults = false
+	}
+	return values, matchesDefaults
+}
+
+// parameterText renders a stored default for comparison with a --param
+// value, which is always a string. Numbers arrive as json.Number and
+// compare by the text they were written with; a default that is not a
+// scalar at all — a date range is an object — never equals one, which is
+// what makes the notice fire for the parameter kinds --param cannot
+// express.
+func parameterText(value any) string { return fmt.Sprint(value) }
 
 // resolveQueryID reads the <id|url> argument the saved-query commands take:
 // an all-digit value is an ID, anything else has to be a query URL on the

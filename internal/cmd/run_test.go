@@ -64,11 +64,21 @@ type fakeServer struct {
 	// defaultSavedQuerySQL. A test that reads the SQL back sets it, which is
 	// what makes the show command's newline handling observable.
 	savedQuerySQL string
-	cancelled     bool
-	submitted     bool
-	fetched       bool           // GET /api/queries/<id> arrived
-	listedSources bool           // GET /api/data_sources arrived
-	created       map[string]any // body of POST /api/queries
+	// savedQueryParameters is what GET /api/queries/<id> serves as
+	// options.parameters; nil serves a query carrying no options at all,
+	// which is what `rdsh query create` saves.
+	savedQueryParameters []map[string]any
+	// missingParameter makes the execution endpoint refuse the way Redash
+	// refuses a placeholder it was given no value for: a failed job rather
+	// than a message, and an HTTP 400.
+	missingParameter bool
+	cancelled        bool
+	submitted        bool
+	fetched          bool           // GET /api/queries/<id> arrived
+	listedSources    bool           // GET /api/data_sources arrived
+	created          map[string]any // body of POST /api/queries
+	// refreshed is the body of POST /api/queries/<id>/results.
+	refreshed map[string]any
 	// listed is the query string of every listing request that arrived, in
 	// order, so a test can check both the endpoint and how it was called.
 	listed []*url.URL
@@ -152,11 +162,35 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 		if sql == "" {
 			sql = defaultSavedQuerySQL
 		}
-		mustJSON(w, map[string]any{
+		query := map[string]any{
 			"id": savedQueryID, "name": "saved", "description": "what it is for", "query": sql,
 			"data_source_id": 5, "is_draft": true, "version": savedQueryVersion,
-		})
+		}
+		if f.savedQueryParameters != nil {
+			query["options"] = map[string]any{"parameters": f.savedQueryParameters}
+		}
+		mustJSON(w, query)
 	})
+	mux.HandleFunc(fmt.Sprintf("POST /api/queries/%d/results", savedQueryID),
+		func(w http.ResponseWriter, r *http.Request) {
+			f.mu.Lock()
+			if err := json.NewDecoder(r.Body).Decode(&f.refreshed); err != nil {
+				t.Errorf("decode executed query: %v", err)
+			}
+			f.mu.Unlock()
+			if f.missingParameter {
+				w.WriteHeader(http.StatusBadRequest)
+				mustJSON(w, map[string]any{"job": map[string]any{
+					"status": 4, "error": "Missing parameter value for: since",
+				}})
+				return
+			}
+			job := map[string]any{"id": "job-1", "status": 3, "query_result_id": 42}
+			if f.neverDone {
+				job = map[string]any{"id": "job-1", "status": 1}
+			}
+			mustJSON(w, map[string]any{"job": job})
+		})
 	mux.HandleFunc(fmt.Sprintf("POST /api/queries/%d", savedQueryID), func(w http.ResponseWriter, r *http.Request) {
 		f.reach(updateRequest)
 		f.mu.Lock()
@@ -595,6 +629,7 @@ func TestTimeoutFlagContract(t *testing.T) {
 		{"query", "update"},
 		{"query", "list"},
 		{"query", "show"},
+		{"query", "refresh"},
 		{"data-source", "list"},
 		{"auth", "login"},
 	}

@@ -1,7 +1,7 @@
-// Package redash is a minimal Redash REST API client covering ad-hoc query
-// execution: submit, poll, fetch, cancel, plus saved-query creation, reading
-// and editing, data-source listing and a session check for login
-// verification.
+// Package redash is a minimal Redash REST API client covering query
+// execution, ad-hoc and by saved-query ID: submit, poll, fetch, cancel,
+// plus saved-query creation, reading and editing, data-source listing and
+// a session check for login verification.
 package redash
 
 import (
@@ -93,6 +93,26 @@ type Query struct {
 	// against the query as it stands; Redash refuses one carrying a stale
 	// value.
 	Version int `json:"version"`
+	// Options carries the settings the query holds beside its SQL. Only
+	// the parameter definitions are read; the rest of the object is left
+	// where it is, since nothing here writes options back.
+	Options QueryOptions `json:"options"`
+}
+
+// QueryOptions is the part of a saved query's options rdsh reads. A query
+// saved through the API carries no options at all, which reads back as the
+// zero value rather than as a failure.
+type QueryOptions struct {
+	Parameters []QueryParameter `json:"parameters"`
+}
+
+// QueryParameter is one parameter defined on a saved query.
+type QueryParameter struct {
+	Name string `json:"name"`
+	// Value is the stored default, decoded as it came: numbers stay
+	// json.Number, so sending one back reproduces the text Redash hashed
+	// the query with. A parameter defined without a default is nil.
+	Value any `json:"value"`
 }
 
 // NewQuery holds the fields the API accepts when a saved query is created.
@@ -135,18 +155,41 @@ type DataSource struct {
 	Name string `json:"name"`
 }
 
-// RunQuery submits an ad-hoc query (cache always bypassed via max_age=0) and
-// polls until it finishes, returning the fetched result. When ctx expires or
-// is cancelled mid-flight, the server-side job is cancelled best-effort on a
-// fresh short-lived context (the original one is already dead) and the
-// returned error wraps ctx.Err() so callers can map timeout vs interrupt to
-// exit codes.
+// RunQuery submits an ad-hoc query (cache always bypassed via max_age=0)
+// and polls until it finishes, returning the fetched result.
 func (c *Client) RunQuery(ctx context.Context, query string, dataSourceID int) (*QueryResult, error) {
 	job, err := c.submitQuery(ctx, query, dataSourceID)
 	if err != nil {
 		return nil, err
 	}
+	return c.awaitResult(ctx, job)
+}
 
+// RefreshQuery executes the saved query on the server and returns the
+// fetched result. Unlike RunQuery, which runs SQL the server has never
+// seen, this is the execution the query page itself makes: Redash records
+// it against the saved query, so the cached result everyone sees advances
+// — as long as parameters render the query to the text its stored hash was
+// taken over.
+//
+// parameters supplies a value for every placeholder the query has; one left
+// uncovered fails the execution on the server rather than here.
+func (c *Client) RefreshQuery(ctx context.Context, id int, parameters map[string]any) (*QueryResult, error) {
+	job, err := c.submitSavedQuery(ctx, id, parameters)
+	if err != nil {
+		return nil, err
+	}
+	return c.awaitResult(ctx, job)
+}
+
+// awaitResult polls the submitted job until it finishes and fetches what it
+// produced. Both ways of submitting share it, so a query behaves the same
+// on the way out whichever one started it: when ctx expires or is cancelled
+// mid-flight, the server-side job is cancelled best-effort on a fresh
+// short-lived context (the original one is already dead) and the returned
+// error wraps ctx.Err() so callers can map timeout vs interrupt to exit
+// codes.
+func (c *Client) awaitResult(ctx context.Context, job *Job) (*QueryResult, error) {
 	// The job ID is kept separately because getJob returns nil on error and
 	// the ID must survive a poll that failed due to ctx expiry.
 	jobID := job.ID
@@ -170,6 +213,7 @@ func (c *Client) RunQuery(ctx context.Context, query string, dataSourceID int) (
 		case <-time.After(c.PollInterval):
 		}
 
+		var err error
 		if job, err = c.getJob(ctx, jobID); err != nil {
 			if ctx.Err() != nil {
 				return nil, c.abandonJob(ctx, jobID)
@@ -205,6 +249,35 @@ func (c *Client) submitQuery(ctx context.Context, query string, dataSourceID int
 		Job *Job `json:"job"`
 	}
 	if err := c.do(ctx, http.MethodPost, "/api/query_results", body, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Job == nil {
+		return nil, errors.New("server did not return a job")
+	}
+	return resp.Job, nil
+}
+
+// submitSavedQuery asks the server to execute the saved query with the
+// given parameter values.
+func (c *Client) submitSavedQuery(ctx context.Context, id int, parameters map[string]any) (*Job, error) {
+	if parameters == nil {
+		// The server reads the field with a default an explicit null
+		// defeats, and then fails on the null it got instead.
+		parameters = map[string]any{}
+	}
+	// apply_auto_limit is deliberately absent rather than false: left out,
+	// the server falls back to the query's own options.apply_auto_limit,
+	// which is the setting its stored hash was taken with. Sending false
+	// would execute a different text on any query that has it on, and the
+	// cached result everyone sees would not advance.
+	body := map[string]any{
+		"parameters": parameters,
+		"max_age":    0, // always execute rather than serve the cached result
+	}
+	var resp struct {
+		Job *Job `json:"job"`
+	}
+	if err := c.do(ctx, http.MethodPost, fmt.Sprintf("/api/queries/%d/results", id), body, &resp); err != nil {
 		return nil, err
 	}
 	if resp.Job == nil {
@@ -432,12 +505,24 @@ func (e *statusError) Error() string {
 
 func apiError(method, path string, resp *http.Response) error {
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	// Two shapes, because Redash refuses a query run in a different one
+	// from everything else: run_query answers a paused data source or a
+	// parameter value it was never given with a failed job rather than
+	// with the message field flask_restful's abort() produces. Reading
+	// only the latter would leave the caller an HTTP status and nothing
+	// to act on.
 	var payload struct {
 		Message string `json:"message"`
+		Job     struct {
+			Error string `json:"error"`
+		} `json:"job"`
 	}
 	msg := ""
 	if json.Unmarshal(data, &payload) == nil {
 		msg = payload.Message
+		if msg == "" {
+			msg = payload.Job.Error
+		}
 	}
 	return &statusError{method: method, path: path, statusCode: resp.StatusCode, message: msg}
 }
