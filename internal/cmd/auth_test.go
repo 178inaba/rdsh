@@ -427,3 +427,54 @@ func TestDataSourceList(t *testing.T) {
 		t.Errorf("output = %q, want %q", out, want)
 	}
 }
+
+// TestDataSourceListTimeout covers the wedged server the listing used to
+// block on forever: the deadline has to end the run, and say what it was
+// waiting for.
+func TestDataSourceListTimeout(t *testing.T) {
+	f := &fakeServer{hangList: true}
+	srv := f.start(t)
+
+	_, err := runRdshIn(t, t.TempDir(), srv, "", "data-source", "list", "--timeout", "50ms")
+	if !errors.Is(err, errTimeout) {
+		t.Fatalf("error = %v, want errTimeout", err)
+	}
+	if got := exitCode(err); got != timeoutExitCode {
+		t.Errorf("exitCode(%v) = %d, want %d", err, got, timeoutExitCode)
+	}
+	if !strings.Contains(err.Error(), "data source") {
+		t.Errorf("error = %v, want it to name the operation that timed out", err)
+	}
+}
+
+// TestDataSourceListNegativeTimeout checks that a bad duration is refused
+// before the listing is requested, not after the server has answered it.
+func TestDataSourceListNegativeTimeout(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	_, err := runRdshIn(t, t.TempDir(), srv, "", "data-source", "list", "--timeout", "-5s")
+	if err == nil || !strings.Contains(err.Error(), "negative") {
+		t.Fatalf("error = %v, want negative-timeout error", err)
+	}
+	select {
+	case got := <-f.reached:
+		t.Errorf("the %s request was sent despite the invalid --timeout", got)
+	default:
+	}
+}
+
+// TestDataSourceListUnlimitedTimeout pins that 0 means no limit rather
+// than a deadline that has already passed.
+func TestDataSourceListUnlimitedTimeout(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	out, err := runRdshIn(t, t.TempDir(), srv, "", "data-source", "list", "--timeout", "0")
+	if err != nil {
+		t.Fatalf("data-source list error = %v", err)
+	}
+	if want := "7\twarehouse\n"; out != want {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+}
