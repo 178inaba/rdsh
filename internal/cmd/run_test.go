@@ -67,6 +67,7 @@ type fakeServer struct {
 	cancelled     bool
 	submitted     bool
 	fetched       bool           // GET /api/queries/<id> arrived
+	listedSources bool           // GET /api/data_sources arrived
 	created       map[string]any // body of POST /api/queries
 	// listed is the query string of every listing request that arrived, in
 	// order, so a test can check both the endpoint and how it was called.
@@ -117,6 +118,9 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("GET /api/data_sources", func(w http.ResponseWriter, r *http.Request) {
 		f.reach(dataSourcesRequest)
+		f.mu.Lock()
+		f.listedSources = true
+		f.mu.Unlock()
 		if f.hangList {
 			f.park(r)
 			return
@@ -473,18 +477,10 @@ func TestRunDataSourceByIDSkipsLookup(t *testing.T) {
 	if !strings.Contains(err.Error(), "query timed out") {
 		t.Errorf("error = %v, want the query's timeout rather than the lookup's", err)
 	}
-	// The listing endpoint records arrivals in reached alone, and a lookup
-	// would precede every other request, so it cannot be one of the
-	// arrivals reach drops once the buffer is full.
-	for drained := false; !drained; {
-		select {
-		case got := <-f.reached:
-			if got == dataSourcesRequest {
-				t.Errorf("the %s request was sent for an all-digit --data-source", got)
-			}
-		default:
-			drained = true
-		}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listedSources {
+		t.Error("the data sources were listed for an all-digit --data-source")
 	}
 }
 
