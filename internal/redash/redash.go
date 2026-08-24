@@ -432,12 +432,24 @@ func (e *statusError) Error() string {
 
 func apiError(method, path string, resp *http.Response) error {
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	// Two shapes, because Redash refuses a query run in a different one
+	// from everything else: run_query answers a paused data source or a
+	// parameter value it was never given with a failed job rather than
+	// with the message field flask_restful's abort() produces. Reading
+	// only the latter would leave the caller an HTTP status and nothing
+	// to act on.
 	var payload struct {
 		Message string `json:"message"`
+		Job     struct {
+			Error string `json:"error"`
+		} `json:"job"`
 	}
 	msg := ""
 	if json.Unmarshal(data, &payload) == nil {
 		msg = payload.Message
+		if msg == "" {
+			msg = payload.Job.Error
+		}
 	}
 	return &statusError{method: method, path: path, statusCode: resp.StatusCode, message: msg}
 }

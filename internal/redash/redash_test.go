@@ -30,6 +30,9 @@ type fakeRedash struct {
 	jobStatuses   []int  // consecutive GET /api/jobs responses
 	jobError      string // error field served with status 4
 	pollCount     int
+	// submitRefusal is the message POST /api/query_results refuses the
+	// submission with, as a failed job rather than as a message field.
+	submitRefusal string
 	cancelled     bool
 	cancelStatus  int // HTTP status for DELETE, default 200
 	submittedBody map[string]any
@@ -57,6 +60,13 @@ func (f *fakeRedash) server() *httptest.Server {
 		f.gotAuth = append(f.gotAuth, r.Header.Get("Authorization"))
 		if err := json.NewDecoder(r.Body).Decode(&f.submittedBody); err != nil {
 			f.t.Errorf("decode submitted body: %v", err)
+		}
+		if f.submitRefusal != "" {
+			// The shape run_query refuses with, which is not the
+			// {"message": ...} the rest of the API uses.
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"job": map[string]any{"status": 4, "error": f.submitRefusal}})
+			return
 		}
 		writeJSON(w, map[string]any{"job": map[string]any{"id": "job-1", "status": 1}})
 	})
@@ -246,6 +256,26 @@ func TestRunQuerySuccess(t *testing.T) {
 		if a != "Key k" {
 			t.Errorf("Authorization = %q, want %q", a, "Key k")
 		}
+	}
+}
+
+// TestRunQueryRefusalCarriesItsMessage pins that a refusal Redash reports
+// as a failed job rather than as a message still reaches the caller as one.
+// run_query answers a paused data source, and a saved query missing a
+// parameter value, with {"job": {"status": 4, "error": ...}} and an HTTP
+// 400; reading the message field alone would leave the caller the status
+// and nothing to act on.
+func TestRunQueryRefusalCarriesItsMessage(t *testing.T) {
+	f := &fakeRedash{t: t, submitRefusal: "warehouse is paused. Please try later."}
+	srv := f.server()
+	defer srv.Close()
+
+	_, err := newTestClient(srv, "k").RunQuery(context.Background(), "SELECT 1", 5)
+	if err == nil {
+		t.Fatal("RunQuery() error = nil, want the server's refusal")
+	}
+	if !strings.Contains(err.Error(), "warehouse is paused") {
+		t.Errorf("RunQuery() error = %v, want it to carry the server's message", err)
 	}
 }
 
