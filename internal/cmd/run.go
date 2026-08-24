@@ -63,7 +63,7 @@ func runRun(cmd *cobra.Command, args []string, g *globalFlags, file, dataSource 
 
 	dsID, err := resolveDataSource(ctx, client, dataSource, conn.DataSource)
 	if err != nil {
-		return err
+		return timeoutOr(err, timeout, "the data source lookup")
 	}
 
 	result, err := client.RunQuery(ctx, sql, dsID)
@@ -131,6 +131,12 @@ func sqlFromArgOrFile(arg string, hasArg bool, file string) (string, bool, error
 // resolveDataSource returns the data source ID to query. The flag overrides
 // the profile default; an all-digit value is an ID, anything else is
 // resolved as an exact name match via the API.
+//
+// Resolving a name is a server call, so callers pass what this returns
+// through timeoutOr: a deadline that expires here is as much a --timeout
+// expiry as one that expires in the query itself. Only the callers know
+// the timeout the run was given, and the errors that are not the deadline
+// travel out of timeoutOr untouched.
 func resolveDataSource(ctx context.Context, client *redash.Client, flag, profileDefault string) (int, error) {
 	value := flag
 	if value == "" {

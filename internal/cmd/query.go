@@ -80,7 +80,7 @@ func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 
 	dsID, err := resolveDataSource(ctx, client, dataSource, conn.DataSource)
 	if err != nil {
-		return err
+		return timeoutOr(err, timeout, "the data source lookup")
 	}
 
 	// A create the deadline cuts off is an ordinary timeout: either the

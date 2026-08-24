@@ -436,6 +436,58 @@ func TestRunDataSourceNameNotFound(t *testing.T) {
 	}
 }
 
+// TestRunDataSourceLookupTimeout covers the deadline expiring while a
+// --data-source name is resolved to an ID. The lookup is a server call like
+// any other, so it has to end the run as a timeout rather than report a bare
+// context error as an ordinary failure — 1 tells an agent that a longer
+// --timeout will not help, which is the one recovery that would.
+func TestRunDataSourceLookupTimeout(t *testing.T) {
+	f := &fakeServer{hangList: true}
+	srv := f.start(t)
+
+	_, err := runRdsh(t, srv, "", "run", "SELECT 1", "--data-source", "warehouse", "--timeout", "50ms")
+	if !errors.Is(err, errTimeout) {
+		t.Fatalf("error = %v, want errTimeout", err)
+	}
+	if got := exitCode(err); got != timeoutExitCode {
+		t.Errorf("exitCode(%v) = %d, want %d", err, got, timeoutExitCode)
+	}
+	// Not "data source", which data-source list's own message carries as
+	// well: the wording has to tell the lookup apart from the listing.
+	if !strings.Contains(err.Error(), "lookup") {
+		t.Errorf("error = %v, want it to name the lookup that timed out", err)
+	}
+}
+
+// TestRunDataSourceByIDSkipsLookup pins what the lookup's new timeout must
+// not change: an all-digit --data-source still resolves without asking the
+// server, so the only expiry it can reach is the query's.
+func TestRunDataSourceByIDSkipsLookup(t *testing.T) {
+	f := &fakeServer{neverDone: true}
+	srv := f.start(t)
+
+	_, err := runRdsh(t, srv, "", "run", "SELECT 1", "--data-source", "5", "--timeout", "50ms")
+	if !errors.Is(err, errTimeout) {
+		t.Fatalf("error = %v, want errTimeout", err)
+	}
+	if !strings.Contains(err.Error(), "query timed out") {
+		t.Errorf("error = %v, want the query's timeout rather than the lookup's", err)
+	}
+	// The listing endpoint records arrivals in reached alone, and a lookup
+	// would precede every other request, so it cannot be one of the
+	// arrivals reach drops once the buffer is full.
+	for drained := false; !drained; {
+		select {
+		case got := <-f.reached:
+			if got == dataSourcesRequest {
+				t.Errorf("the %s request was sent for an all-digit --data-source", got)
+			}
+		default:
+			drained = true
+		}
+	}
+}
+
 func TestRunNoDataSource(t *testing.T) {
 	srv := (&fakeServer{}).start(t)
 	_, err := runRdsh(t, srv, "", "run", "SELECT 1")
