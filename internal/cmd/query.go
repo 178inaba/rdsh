@@ -43,7 +43,23 @@ SQL is taken from the argument, from --file, or from stdin when neither is
 given. Run the same SQL with ` + "`rdsh run`" + ` first and Redash attaches that
 result to the new query, so the URL opens with data already on it.
 
-The query is published unless --draft is given.`,
+The query is published unless --draft is given.
+
+A parameter the SQL uses ({{name}}) needs a stored default, or the query
+page stays empty for everyone else: Redash matches a result to a query by
+the hash of its SQL with the defaults substituted, so a parameter without
+one can never link a result. --param-default name=value declares the
+parameter and sets its default; --param-type name=type gives it a type,
+which is text unless said otherwise. The types are text, text-pattern,
+number, date, datetime-local and datetime-with-seconds. A text-pattern
+parameter also needs --param-regex name=pattern, which implies that type on
+its own. All three are repeatable and split at the first =, so a value or a
+pattern may contain one.
+
+Every parameter the SQL uses has to be covered, and defining any of them is
+a one-way move: once a query carries definitions, executing it with a name
+that is not among them is refused. Range, enum and dropdown-query parameters
+are the Redash UI's to define.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runQueryCreate(cmd, args, g, name, description, file, dataSource, draft, params, timeout.Duration())
@@ -178,7 +194,17 @@ back to it would turn whatever a caller happened to pipe in into the query.
 
 The update carries the version the query had when it was read, so an edit
 made in the Redash UI in the meantime fails the command instead of being
-overwritten.`,
+overwritten.
+
+--param-default, --param-type and --param-regex mean what they do on create,
+applied as an edit: for a parameter already defined, only the keys the flags
+carry are overwritten, so a title set in the Redash UI and a type no flag
+mentions survive, as does every definition not named. A parameter defined as
+a range, enum or dropdown query is refused rather than rewritten.
+
+Passing any of them, or new SQL, also holds the query to the rule that every
+parameter its SQL uses is defined. Changing only the name or description
+does not, so a query whose parameters have no defaults can still be renamed.`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runQueryUpdate(cmd, args, g, name, description, file, publish, draft, params, timeout.Duration())

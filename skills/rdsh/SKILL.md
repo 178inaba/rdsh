@@ -35,13 +35,15 @@ To hand someone a Redash URL, run the SQL with `rdsh run` first, then save it wi
 
 New queries are published, so they appear in colleagues' query lists — that is what sharing needs. Pass `--draft` for queries that exist only to be referenced (Query Results parts), so they stay out of everyone else's list; a draft is still reachable by URL and still usable as `query_<id>`.
 
+If the SQL is parametrized, define the parameters as you save it. Redash matches a result to a query by the hash of its SQL with the stored defaults substituted, so a parameter left without a default can never link one and the query page opens empty for everyone else — the failure is silent, and looks like the sharing worked. `rdsh query create --help` has the flags; the judgement call is which values to make the defaults, since those are what colleagues see on the page. Defining parameters is also one-way: from then on the query can only be executed with the names that were defined, so cover all of them. Ranges, enums and dropdown parameters are beyond what rdsh can define — a query needing one has to be created in the Redash UI, and rdsh reports that rather than saving something broken.
+
 ## Finding a saved query
 
 When a query's ID is needed and only its name is known — or nothing is known — use `rdsh query list`. This is the way to reach a query saved in an earlier session or by someone else; a URL that was printed once is not a lookup mechanism. The optional argument is a full-text search, `--mine` narrows to the caller's own queries, and the `id` column is what `query_<id>` and `rdsh query update` take.
 
 Drafts are visible in this listing only to the user who saved them, so a query someone else left as a draft will not appear even though its URL works. If stderr says the listing was truncated, narrow the search or raise `--limit` rather than treating the first rows as the whole answer.
 
-To change a saved query afterwards — fix the SQL, rename it, flip it between published and draft — use `rdsh query update` on its ID or URL rather than saving a second query; the URL already handed out keeps working. It refuses an invocation with nothing to change, and — unlike `rdsh run` and `rdsh query create` — it never reads stdin, so pipe nothing into it. If it reports that the query changed on the server, someone edited it in the Redash UI in the meantime: read the query again and compose the update from what is there now — re-running the same command unchanged will keep failing.
+To change a saved query afterwards — fix the SQL, rename it, flip it between published and draft, change a parameter's default or type — use `rdsh query update` on its ID or URL rather than saving a second query; the URL already handed out keeps working. It refuses an invocation with nothing to change, and — unlike `rdsh run` and `rdsh query create` — it never reads stdin, so pipe nothing into it. If it reports that the query changed on the server, someone edited it in the Redash UI in the meantime: read the query again and compose the update from what is there now — re-running the same command unchanged will keep failing.
 
 ## Reading a query someone shared
 
@@ -60,9 +62,9 @@ That is how a shared query is answered with current data — the saved query's o
 
 `query refresh` prints the rows too, so it never needs a second call to see what it produced. Prefer it over saving a near-duplicate query when a colleague's query almost answers the question — refreshing theirs with different `--param` values costs nothing and leaves no clutter behind.
 
-The one thing to check before reporting success: refreshing with parameter values that differ from the ones stored on the query updates nothing on the page. Redash ties an execution to a query by the text it ran, so only a run with the query's own stored defaults advances the shared result. rdsh says so on stderr in that case and still exits 0 — read stderr before telling the user the shared view is current. If they need the overridden values to be what everyone sees, the defaults themselves have to change in the Redash UI (`rdsh query update` edits SQL and metadata, not parameter definitions).
+The one thing to check before reporting success: refreshing with parameter values that differ from the ones stored on the query updates nothing on the page. Redash ties an execution to a query by the text it ran, so only a run with the query's own stored defaults advances the shared result. rdsh says so on stderr in that case and still exits 0 — read stderr before telling the user the shared view is current. If they need the overridden values to be what everyone sees, change the defaults themselves with `rdsh query update --param-default` and refresh again — but that changes what every colleague sees on the page, so treat it as an edit to shared state rather than as a way to get one execution to stick.
 
-A parameter that has no stored default cannot be filled in by the server, so a query with one fails unless `--param` covers it; the error names the parameter.
+A parameter that has no stored default cannot be filled in by the server, so a query with one fails unless `--param` covers it; the error names the parameter. That query also has no shared result at all, which is worth saying to the user: giving the parameter a default with `rdsh query update` is what makes the page work for everyone, not just this execution.
 
 ## Timeouts and exit codes
 
