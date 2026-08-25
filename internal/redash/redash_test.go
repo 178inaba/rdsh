@@ -39,6 +39,21 @@ type fakeRedash struct {
 	cancelStatus  int // HTTP status for DELETE, default 200
 	submittedBody map[string]any
 	refreshBody   map[string]any // body of POST /api/queries/7/results
+	// probeBody is the body of the same endpoint when the request asked for
+	// a cached result (max_age -1) rather than an execution. Kept apart
+	// from refreshBody so a probe and a refresh in one test do not
+	// overwrite each other's record.
+	probeBody map[string]any
+	// cachedColumns makes the cached-result probe answer with a result
+	// carrying these column names; nil makes it answer with a job, which
+	// is what the real server does when nothing is cached.
+	cachedColumns []string
+	// visualizations is what GET /api/queries/7 serves as its
+	// visualizations array; nil leaves the key out.
+	visualizations []map[string]any
+	createdViz     map[string]any // body of POST /api/visualizations
+	updatedViz     map[string]any // body of POST /api/visualizations/9
+	deletedViz     bool           // DELETE /api/visualizations/9 arrived
 	queryOptions  map[string]any // options served by GET /api/queries/7
 	// nullQueryOptions serves options as an explicit null instead, which is
 	// a different shape from the key being absent.
@@ -154,13 +169,36 @@ func (f *fakeRedash) server() *httptest.Server {
 		case f.queryOptions != nil:
 			query["options"] = f.queryOptions
 		}
+		if f.visualizations != nil {
+			query["visualizations"] = f.visualizations
+		}
 		writeJSON(w, query)
 	})
 	mux.HandleFunc("POST /api/queries/7/results", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		if err := json.NewDecoder(r.Body).Decode(&f.refreshBody); err != nil {
-			f.t.Errorf("decode refresh body: %v", err)
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			f.t.Errorf("decode results body: %v", err)
+		}
+		// The one endpoint answers both an execution (max_age 0) and a
+		// probe for whatever is cached (max_age -1), and only the latter
+		// can come back as a result rather than a job. Branching on the
+		// field the real server branches on is what keeps the two apart.
+		if maxAge, ok := body["max_age"].(float64); ok && maxAge < 0 {
+			f.probeBody = body
+			if f.cachedColumns != nil {
+				columns := make([]map[string]any, len(f.cachedColumns))
+				for i, name := range f.cachedColumns {
+					columns[i] = map[string]any{"name": name, "friendly_name": name, "type": "string"}
+				}
+				writeJSON(w, map[string]any{"query_result": map[string]any{"data": map[string]any{
+					"columns": columns, "rows": []map[string]any{},
+				}}})
+				return
+			}
+		} else {
+			f.refreshBody = body
 		}
 		writeJSON(w, map[string]any{"job": map[string]any{"id": "job-1", "status": 1}})
 	})
@@ -181,6 +219,31 @@ func (f *fakeRedash) server() *httptest.Server {
 			return
 		}
 		writeJSON(w, map[string]any{"id": 7, "name": "saved", "is_draft": false})
+	})
+	mux.HandleFunc("POST /api/visualizations", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if err := json.NewDecoder(r.Body).Decode(&f.createdViz); err != nil {
+			f.t.Errorf("decode created visualization: %v", err)
+		}
+		writeJSON(w, map[string]any{
+			"id": 9, "type": f.createdViz["type"], "name": f.createdViz["name"],
+			"options": f.createdViz["options"],
+		})
+	})
+	mux.HandleFunc("POST /api/visualizations/9", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if err := json.NewDecoder(r.Body).Decode(&f.updatedViz); err != nil {
+			f.t.Errorf("decode updated visualization: %v", err)
+		}
+		writeJSON(w, map[string]any{"id": 9, "type": "CHART", "name": "chart"})
+	})
+	mux.HandleFunc("DELETE /api/visualizations/9", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.deletedViz = true
+		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("GET /api/queries", f.handleQueryList)
 	mux.HandleFunc("GET /api/queries/my", f.handleQueryList)
@@ -1082,5 +1145,207 @@ func TestListQueriesNoMatches(t *testing.T) {
 	}
 	if len(queries) != 0 || count != 0 {
 		t.Errorf("ListQueries() = %d rows, count %d, want nothing", len(queries), count)
+	}
+}
+
+// TestCachedQueryResultServesTheCache pins the probe's cache-hit half: a
+// result comes back and no job is started, which is what lets a caller
+// check column names without executing anything.
+func TestCachedQueryResultServesTheCache(t *testing.T) {
+	f := &fakeRedash{t: t, cachedColumns: []string{"day", "count"}}
+	srv := f.server()
+	defer srv.Close()
+
+	result, job, err := newTestClient(srv, "k").CachedQueryResult(context.Background(), 7,
+		map[string]any{"days": json.Number("7")})
+	if err != nil {
+		t.Fatalf("CachedQueryResult() error = %v", err)
+	}
+	if job != nil {
+		t.Errorf("job = %+v, want none when a result is cached", job)
+	}
+	if result == nil {
+		t.Fatal("result = nil, want the cached result")
+	}
+	if len(result.Columns) != 2 || result.Columns[0].Name != "day" || result.Columns[1].Name != "count" {
+		t.Errorf("Columns = %+v, want day, count", result.Columns)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// -1 rather than 0: it accepts a cached result of any age, where 0
+	// would skip the cache and always execute.
+	if maxAge, ok := f.probeBody["max_age"]; !ok || maxAge != float64(-1) {
+		t.Errorf("probe max_age = %v (present=%v), want -1", maxAge, ok)
+	}
+	if want := map[string]any{"days": float64(7)}; !reflect.DeepEqual(f.probeBody["parameters"], want) {
+		t.Errorf("probe parameters = %#v, want %#v", f.probeBody["parameters"], want)
+	}
+	// Absent for the same reason a refresh leaves it out: the key changes
+	// the query text, and the text is what the cache is matched by, so
+	// sending it would probe for a result the query page never shows.
+	if _, ok := f.probeBody["apply_auto_limit"]; ok {
+		t.Errorf("probe apply_auto_limit = %v, want the key left out", f.probeBody["apply_auto_limit"])
+	}
+}
+
+// TestCachedQueryResultReportsTheJob pins the cache-miss half: the server
+// enqueues an execution instead of answering, and the job has to reach the
+// caller so it can be cancelled rather than left running.
+func TestCachedQueryResultReportsTheJob(t *testing.T) {
+	f := &fakeRedash{t: t} // no cachedColumns: nothing is cached
+	srv := f.server()
+	defer srv.Close()
+
+	result, job, err := newTestClient(srv, "k").CachedQueryResult(context.Background(), 7, nil)
+	if err != nil {
+		t.Fatalf("CachedQueryResult() error = %v", err)
+	}
+	if result != nil {
+		t.Errorf("result = %+v, want none when nothing is cached", result)
+	}
+	if job == nil {
+		t.Fatal("job = nil, want the job the server enqueued")
+	}
+	if job.ID != "job-1" {
+		t.Errorf("job ID = %q, want job-1", job.ID)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// The same empty-object normalisation a refresh does: a present null
+	// defeats the field's server-side default and fails the request.
+	if params, ok := f.probeBody["parameters"]; !ok || !reflect.DeepEqual(params, map[string]any{}) {
+		t.Errorf("probe parameters = %#v (present=%v), want an empty object", params, ok)
+	}
+}
+
+// TestGetQueryReadsVisualizations pins that reading a query carries the
+// charts attached to it, which is the only way to reach a visualization's
+// ID and its stored options: Redash has no endpoint that reads one by ID.
+func TestGetQueryReadsVisualizations(t *testing.T) {
+	f := &fakeRedash{t: t, visualizations: []map[string]any{
+		{"id": 9, "type": "CHART", "name": "daily", "options": map[string]any{
+			"globalSeriesType": "line",
+			"columnMapping":    map[string]any{"day": "x", "count": "y"},
+		}},
+	}}
+	srv := f.server()
+	defer srv.Close()
+
+	q, err := newTestClient(srv, "k").GetQuery(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetQuery() error = %v", err)
+	}
+	if len(q.Visualizations) != 1 {
+		t.Fatalf("len(Visualizations) = %d, want 1", len(q.Visualizations))
+	}
+	v := q.Visualizations[0]
+	if v.ID != 9 || v.Type != "CHART" || v.Name != "daily" {
+		t.Errorf("Visualizations[0] = %+v, want id 9, CHART, daily", v)
+	}
+	// The options blob is kept key by key rather than decoded into fields:
+	// Redash stores it without validating it and an update replaces it
+	// wholesale, so an edit has to be able to send back what it did not
+	// mean to touch.
+	if got := string(v.Options["globalSeriesType"]); got != `"line"` {
+		t.Errorf("options globalSeriesType = %s, want \"line\"", got)
+	}
+	if _, ok := v.Options["columnMapping"]; !ok {
+		t.Errorf("options = %v, want a columnMapping key kept as it arrived", v.Options)
+	}
+}
+
+// TestGetQueryWithoutVisualizations pins that a query carrying no charts
+// reads back as none rather than as a failure.
+func TestGetQueryWithoutVisualizations(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	q, err := newTestClient(srv, "k").GetQuery(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetQuery() error = %v", err)
+	}
+	if q.Visualizations != nil {
+		t.Errorf("Visualizations = %+v, want nil", q.Visualizations)
+	}
+}
+
+func TestCreateVisualization(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	created, err := newTestClient(srv, "k").CreateVisualization(context.Background(), redash.NewVisualization{
+		QueryID: 7,
+		Type:    "CHART",
+		Name:    "daily",
+		Options: map[string]json.RawMessage{
+			"globalSeriesType": json.RawMessage(`"line"`),
+			"columnMapping":    json.RawMessage(`{"day":"x","count":"y"}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateVisualization() error = %v", err)
+	}
+	if created.ID != 9 {
+		t.Errorf("created ID = %d, want 9", created.ID)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.createdViz["query_id"] != float64(7) || f.createdViz["type"] != "CHART" ||
+		f.createdViz["name"] != "daily" {
+		t.Errorf("created visualization = %v, want query_id 7, CHART, daily", f.createdViz)
+	}
+	want := map[string]any{
+		"globalSeriesType": "line",
+		"columnMapping":    map[string]any{"day": "x", "count": "y"},
+	}
+	if !reflect.DeepEqual(f.createdViz["options"], want) {
+		t.Errorf("created options = %#v, want %#v", f.createdViz["options"], want)
+	}
+}
+
+// TestUpdateVisualizationSendsOnlyWhatChanged pins that a nil field is left
+// out of the request: Redash replaces every key the body carries, so a
+// rename must not also rewrite the options blob.
+func TestUpdateVisualizationSendsOnlyWhatChanged(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	name := "renamed"
+	if _, err := newTestClient(srv, "k").UpdateVisualization(context.Background(), 9,
+		redash.VisualizationUpdate{Name: &name}); err != nil {
+		t.Fatalf("UpdateVisualization() error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.updatedViz["name"] != "renamed" {
+		t.Errorf("updated name = %v, want renamed", f.updatedViz["name"])
+	}
+	for _, key := range []string{"type", "options"} {
+		if _, ok := f.updatedViz[key]; ok {
+			t.Errorf("updated body carries %s = %v, want the key left out", key, f.updatedViz[key])
+		}
+	}
+}
+
+func TestDeleteVisualization(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	if err := newTestClient(srv, "k").DeleteVisualization(context.Background(), 9); err != nil {
+		t.Fatalf("DeleteVisualization() error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.deletedViz {
+		t.Error("the delete never reached the server")
 	}
 }
