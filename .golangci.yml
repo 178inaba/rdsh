@@ -1,5 +1,12 @@
 version: "2"
 
+# Without this the e2e suite goes unlinted: golangci-lint analyses only the
+# files the default build tags select, and every file under e2e/ is behind
+# the `e2e` tag.
+run:
+  build-tags:
+    - e2e
+
 # The linter set is enumerated rather than inherited from the running version's
 # own default, so a golangci-lint upgrade changes diagnostics but never which
 # linters are active.
