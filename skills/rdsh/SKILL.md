@@ -70,9 +70,9 @@ A parameter that has no stored default cannot be filled in by the server, so a q
 
 When the user's goal is that someone *look* at the data — a chart to share, "make this a graph", a query page that should show more than rows — `rdsh visualization create` attaches one to the saved query. It is the same page and the same URL, so nothing new has to be shared.
 
-Refresh the query first. Column names are validated against the query's cached result before anything is created, and on a query with no cached result the command fails and says so rather than creating a chart. That ordering is also how the right columns get picked: refreshing prints the rows, which is what shows which columns exist and which of them are worth plotting. Never guess column names from the SQL — a `SELECT *`, an alias, or a driver's own casing will not match, and the check exists because Redash accepts a wrong name silently and renders nothing.
+Refresh the query first. Column names are validated against the result the query page holds, and a query that has never been run has none, so the command fails rather than creating a chart. That ordering is also how the right columns get picked: refreshing prints the rows, which is what shows which columns exist and which of them are worth plotting. Never guess column names from the SQL — a `SELECT *`, an alias, or a driver's own casing will not match, and the check exists because Redash accepts a wrong name silently and renders nothing.
 
-On a parametrized query, refresh with the same `--param` values the create will use; that is what makes the check a cache hit rather than an error.
+Creating a chart is a pure metadata call: it reads that stored result by ID, so it never executes the query. A saved query that is expensive to run is safe to attach charts to.
 
 The chart types and the raw-JSON escape hatch are in `rdsh visualization create --help`. Reach for the escape hatch only when the typed flags genuinely cannot express what was asked — it skips the validation, so a mistake there is the silent blank chart the typed path exists to prevent.
 

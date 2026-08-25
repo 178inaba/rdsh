@@ -1,8 +1,8 @@
 // Package redash is a minimal Redash REST API client covering query
 // execution, ad-hoc and by saved-query ID: submit, poll, fetch, cancel,
-// plus saved-query creation, reading and editing, a probe for the result a
-// saved query already holds, visualization creation, editing and deletion,
-// data-source listing and a session check for login verification.
+// plus saved-query creation, reading and editing, reading a stored result by
+// ID, visualization creation, editing and deletion, data-source listing and
+// a session check for login verification.
 package redash
 
 import (
@@ -94,6 +94,10 @@ type Query struct {
 	// against the query as it stands; Redash refuses one carrying a stale
 	// value.
 	Version int `json:"version"`
+	// LatestQueryDataID is the result Redash shows on the query page, and
+	// draws every chart on it from. Zero means the query has none, which is
+	// what a query nobody has executed reads back as.
+	LatestQueryDataID int `json:"latest_query_data_id"`
 	// Options carries the settings the query holds beside its SQL. An
 	// update replaces the whole object, so it is decoded in a form that
 	// survives being written back: see QueryOptions.
@@ -404,7 +408,7 @@ func (c *Client) awaitResult(ctx context.Context, job *Job) (*QueryResult, error
 		switch job.Status {
 		case StatusPending, StatusStarted:
 		case StatusSuccess:
-			return c.getQueryResult(ctx, job.QueryResultID)
+			return c.GetQueryResult(ctx, job.QueryResultID)
 		case StatusFailure:
 			return nil, fmt.Errorf("query failed: %s", job.Error)
 		case StatusCancelled:
@@ -437,33 +441,12 @@ func (c *Client) abandonJob(ctx context.Context, jobID string) error {
 	if jobID == "" {
 		return ctxErr
 	}
-	if err := c.cancelDetached(jobID); err != nil {
+	cancelCtx, cancel := context.WithTimeout(context.Background(), cancelTimeout)
+	defer cancel()
+	if err := c.CancelJob(cancelCtx, jobID); err != nil {
 		return errors.Join(ctxErr, fmt.Errorf("additionally, cancelling job %s failed: %w", jobID, err))
 	}
 	return ctxErr
-}
-
-// cancelDetached cancels the job on a fresh short-lived context of its own,
-// because the caller's is typically the very thing that expired. The two
-// callers differ only in what they do with the failure: abandonJob reports
-// it alongside the expiry, CancelJobBestEffort discards it.
-func (c *Client) cancelDetached(jobID string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), cancelTimeout)
-	defer cancel()
-	return c.CancelJob(ctx, jobID)
-}
-
-// CancelJobBestEffort stops a job the caller started but does not want,
-// reporting nothing. It is for the caller that already has something more
-// useful to say than a cancellation failure — the cached-result probe,
-// which tells its caller to refresh the query, and would only bury that
-// under an error about a job the caller never asked to start. An empty ID
-// is a job that never got far enough to have one.
-func (c *Client) CancelJobBestEffort(jobID string) {
-	if jobID == "" {
-		return
-	}
-	_ = c.cancelDetached(jobID)
 }
 
 func (c *Client) submitQuery(ctx context.Context, query string, dataSourceID int) (*Job, error) {
@@ -484,23 +467,9 @@ func (c *Client) submitQuery(ctx context.Context, query string, dataSourceID int
 	return resp.Job, nil
 }
 
-// The two max_age values /api/queries/{id}/results is asked for. Zero skips
-// the cache and always executes; a negative value accepts a cached result
-// of any age and only executes when there is none.
-const (
-	maxAgeExecute  = 0
-	maxAgeAnyCache = -1
-)
-
-// savedQueryResultsPath is the endpoint both an execution and a probe for
-// what is already cached go through.
-func savedQueryResultsPath(id int) string {
-	return fmt.Sprintf("/api/queries/%d/results", id)
-}
-
-// savedQueryResultsBody builds that endpoint's request body. Both callers
-// share it so the two things Redash is particular about are stated once.
-func savedQueryResultsBody(parameters map[string]any, maxAge int) map[string]any {
+// submitSavedQuery asks the server to execute the saved query with the
+// given parameter values.
+func (c *Client) submitSavedQuery(ctx context.Context, id int, parameters map[string]any) (*Job, error) {
 	if parameters == nil {
 		// The server reads the field with a default an explicit null
 		// defeats, and then fails on the null it got instead.
@@ -509,58 +478,22 @@ func savedQueryResultsBody(parameters map[string]any, maxAge int) map[string]any
 	// apply_auto_limit is deliberately absent rather than false: left out,
 	// the server falls back to the query's own options.apply_auto_limit,
 	// which is the setting its stored hash was taken with. Sending false
-	// would render a different text — which executes something else on the
-	// way out, and on the way in matches no cached result, since the cache
-	// is keyed by the hash of that very text.
-	return map[string]any{"parameters": parameters, "max_age": maxAge}
-}
-
-// submitSavedQuery asks the server to execute the saved query with the
-// given parameter values.
-func (c *Client) submitSavedQuery(ctx context.Context, id int, parameters map[string]any) (*Job, error) {
+	// would execute a different text on any query that has it on, and the
+	// cached result everyone sees would not advance.
+	body := map[string]any{
+		"parameters": parameters,
+		"max_age":    0, // always execute rather than serve the cached result
+	}
 	var resp struct {
 		Job *Job `json:"job"`
 	}
-	body := savedQueryResultsBody(parameters, maxAgeExecute)
-	if err := c.do(ctx, http.MethodPost, savedQueryResultsPath(id), body, &resp); err != nil {
+	if err := c.do(ctx, http.MethodPost, fmt.Sprintf("/api/queries/%d/results", id), body, &resp); err != nil {
 		return nil, err
 	}
 	if resp.Job == nil {
 		return nil, errors.New("server did not return a job")
 	}
 	return resp.Job, nil
-}
-
-// CachedQueryResult asks what result the saved query already holds for
-// these parameter values, without executing anything of its own. It is how
-// a caller reads the columns a chart drawn on this query would render,
-// which is the one thing Redash will not check for itself: a visualization
-// naming a column the result does not have is stored without complaint and
-// shows up only as a blank chart.
-//
-// Exactly one of the two return values is non-nil on success. A cached
-// result answers as itself; when there is none the server enqueues an
-// execution instead and that job comes back, for the caller to cancel — the
-// probe asks a question and must not leave a query running behind it.
-//
-// parameters supplies a value for every placeholder the query has; one left
-// uncovered fails on the server rather than here.
-func (c *Client) CachedQueryResult(ctx context.Context, id int, parameters map[string]any) (*QueryResult, *Job, error) {
-	var resp struct {
-		QueryResult *queryResultPayload `json:"query_result"`
-		Job         *Job                `json:"job"`
-	}
-	body := savedQueryResultsBody(parameters, maxAgeAnyCache)
-	if err := c.do(ctx, http.MethodPost, savedQueryResultsPath(id), body, &resp); err != nil {
-		return nil, nil, err
-	}
-	if resp.QueryResult != nil {
-		return resp.QueryResult.result(), nil, nil
-	}
-	if resp.Job == nil {
-		return nil, nil, errors.New("server returned neither a cached result nor a job")
-	}
-	return nil, resp.Job, nil
 }
 
 func (c *Client) getJob(ctx context.Context, id string) (*Job, error) {
@@ -595,7 +528,11 @@ func (p *queryResultPayload) result() *QueryResult {
 	return &QueryResult{Columns: p.Data.Columns, Rows: p.Data.Rows}
 }
 
-func (c *Client) getQueryResult(ctx context.Context, resultID int) (*QueryResult, error) {
+// GetQueryResult reads one stored result by ID. Paired with a query's
+// LatestQueryDataID it is how the result the query page shows is read
+// without executing anything, which is what lets a chart's column names be
+// checked against it.
+func (c *Client) GetQueryResult(ctx context.Context, resultID int) (*QueryResult, error) {
 	var resp struct {
 		QueryResult queryResultPayload `json:"query_result"`
 	}

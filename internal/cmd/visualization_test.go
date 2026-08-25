@@ -29,7 +29,7 @@ func chartVisualization() map[string]any {
 func withChart() *fakeServer {
 	return &fakeServer{
 		savedQueryVisualizations: []map[string]any{chartVisualization()},
-		cachedColumns:            []string{"day", "count", "team"},
+		storedColumns:            []string{"day", "count", "team"},
 	}
 }
 
@@ -61,7 +61,7 @@ func TestVisualizationCreateChartTypes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.flag, func(t *testing.T) {
-			f := &fakeServer{cachedColumns: []string{"day", "count"}}
+			f := &fakeServer{storedColumns: []string{"day", "count"}}
 			srv := f.start(t)
 
 			out, err := runRdsh(t, srv, "", "visualization", "create", "--query", "7",
@@ -101,7 +101,7 @@ func TestVisualizationCreateChartTypes(t *testing.T) {
 // TestVisualizationCreateMultipleY covers a multi-series chart: several
 // columns map to "y" in the same columnMapping.
 func TestVisualizationCreateMultipleY(t *testing.T) {
-	f := &fakeServer{cachedColumns: []string{"day", "count", "team"}}
+	f := &fakeServer{storedColumns: []string{"day", "count", "team"}}
 	srv := f.start(t)
 
 	if _, err := runRdsh(t, srv, "", "visualization", "create", "--query", "7",
@@ -131,7 +131,7 @@ func TestVisualizationCreateRejectsUnknownColumn(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := &fakeServer{cachedColumns: []string{"day", "count"}}
+			f := &fakeServer{storedColumns: []string{"day", "count"}}
 			srv := f.start(t)
 
 			args := append([]string{"visualization", "create", "--query", "7",
@@ -155,18 +155,24 @@ func TestVisualizationCreateRejectsUnknownColumn(t *testing.T) {
 	}
 }
 
-// TestVisualizationCreateCancelsTheProbeJob covers the cache miss. The
-// probe leaves the server executing, so the job is cancelled rather than
-// left running, and the caller is sent to the command that fills the cache
-// — creating a chart never executes a query itself.
-func TestVisualizationCreateCancelsTheProbeJob(t *testing.T) {
-	f := &fakeServer{} // no cachedColumns: nothing is cached
+// TestVisualizationCreateNeverExecutesTheQuery covers a query that has no
+// result yet. Nothing is created, the error names the command that would
+// give it one, and — the part worth pinning — no execution is requested.
+//
+// An earlier design asked the server for "whatever is cached for these
+// parameter values", which enqueues an execution when there is none and
+// leaves the caller cancelling it. That cancellation is a race a fast query
+// wins, so the command ran and cached the caller's query, and a second
+// attempt then succeeded where the first had failed. Reading the query's
+// linked result by ID cannot do that.
+func TestVisualizationCreateNeverExecutesTheQuery(t *testing.T) {
+	f := &fakeServer{} // no storedColumns: the query has no result
 	srv := f.start(t)
 
 	_, err := runRdsh(t, srv, "", "visualization", "create", "--query", "7",
 		"--name", "daily", "--type", "line", "--x", "day", "--y", "count")
 	if err == nil {
-		t.Fatal("error = nil, want a query with no cached result refused")
+		t.Fatal("error = nil, want a query with no result refused")
 	}
 	if !strings.Contains(err.Error(), "rdsh query refresh") {
 		t.Errorf("error = %v, want it to name `rdsh query refresh`", err)
@@ -174,40 +180,28 @@ func TestVisualizationCreateCancelsTheProbeJob(t *testing.T) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if !f.cancelled {
-		t.Error("the probe's job was not cancelled on the server")
+	if f.refreshed != nil {
+		t.Errorf("execution body = %v, want the query never executed", f.refreshed)
 	}
 	if f.createdViz != nil {
 		t.Errorf("created visualization = %v, want nothing created", f.createdViz)
 	}
 }
 
-// TestVisualizationCreateProbesWithEffectiveParameters pins that the probe
-// asks for the result the caller's own parameter values produce: the stored
-// defaults, overridden by --param, exactly as `rdsh query refresh` merges
-// them. A prior refresh with the same values is what makes this a cache hit.
-func TestVisualizationCreateProbesWithEffectiveParameters(t *testing.T) {
-	f := &fakeServer{
-		cachedColumns: []string{"day", "count"},
-		savedQueryParameters: []map[string]any{
-			{"name": "days", "type": "number", "value": 7},
-			{"name": "team", "type": "text", "value": "core"},
-		},
-	}
+// TestVisualizationNeverExecutesOnTheHappyPath is the other half: even when
+// the check passes, no execution is requested. A saved query that is
+// expensive to run has to stay safe to attach charts to.
+func TestVisualizationNeverExecutesOnTheHappyPath(t *testing.T) {
+	f := withChart()
 	srv := f.start(t)
 
 	if _, err := runRdsh(t, srv, "", "visualization", "create", "--query", "7",
-		"--name", "daily", "--type", "line", "--x", "day", "--y", "count",
-		"--param", "team=eu"); err != nil {
+		"--name", "daily", "--type", "line", "--x", "day", "--y", "count"); err != nil {
 		t.Fatalf("visualization create error = %v", err)
 	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	want := map[string]any{"days": float64(7), "team": "eu"}
-	if !reflect.DeepEqual(f.probed["parameters"], want) {
-		t.Errorf("probe parameters = %#v, want %#v", f.probed["parameters"], want)
-	}
 	if f.refreshed != nil {
 		t.Errorf("execution body = %v, want the query never executed", f.refreshed)
 	}
@@ -239,8 +233,9 @@ func TestVisualizationCreateRawOptions(t *testing.T) {
 	if got := vizOptions(t, f.createdViz); !reflect.DeepEqual(got, want) {
 		t.Errorf("created options = %#v, want the file's JSON as it was", got)
 	}
-	if f.probed != nil {
-		t.Errorf("probe body = %v, want no column validation in raw mode", f.probed)
+	if f.storedResultReads != 0 {
+		t.Errorf("stored result was read %d times, want no column validation in raw mode",
+			f.storedResultReads)
 	}
 }
 
@@ -255,7 +250,6 @@ func TestVisualizationCreateRawOptionsConflicts(t *testing.T) {
 	for _, conflict := range [][]string{
 		{"--x", "day"},
 		{"--y", "count"},
-		{"--param", "days=7"},
 	} {
 		t.Run(conflict[0], func(t *testing.T) {
 			f := &fakeServer{}
@@ -312,7 +306,7 @@ func TestVisualizationCreateRequiresFlags(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := &fakeServer{cachedColumns: []string{"day", "count"}}
+			f := &fakeServer{storedColumns: []string{"day", "count"}}
 			srv := f.start(t)
 
 			_, err := runRdsh(t, srv, "", append([]string{"visualization", "create"}, tt.args...)...)
@@ -330,7 +324,7 @@ func TestVisualizationCreateRequiresFlags(t *testing.T) {
 // TestVisualizationCreateTakesAQueryURL covers the <id|url> the saved-query
 // commands share, reached here through a flag rather than an argument.
 func TestVisualizationCreateTakesAQueryURL(t *testing.T) {
-	f := &fakeServer{cachedColumns: []string{"day", "count"}}
+	f := &fakeServer{storedColumns: []string{"day", "count"}}
 	srv := f.start(t)
 
 	out, err := runRdsh(t, srv, "", "visualization", "create", "--query", savedQueryURL(srv),
@@ -346,7 +340,7 @@ func TestVisualizationCreateTakesAQueryURL(t *testing.T) {
 // TestVisualizationCommandAlias pins the short name, which is what an agent
 // reaching for the command by its Redash label will type.
 func TestVisualizationCommandAlias(t *testing.T) {
-	f := &fakeServer{cachedColumns: []string{"day", "count"}}
+	f := &fakeServer{storedColumns: []string{"day", "count"}}
 	srv := f.start(t)
 
 	if _, err := runRdsh(t, srv, "", "viz", "create", "--query", "7",
@@ -380,8 +374,9 @@ func TestVisualizationUpdateChangesOnlyWhatIsPassed(t *testing.T) {
 		t.Errorf("updated options = %v, want the key left out when no chart setting changed",
 			f.updatedViz["options"])
 	}
-	if f.probed != nil {
-		t.Errorf("probe body = %v, want no column validation when no column changed", f.probed)
+	if f.storedResultReads != 0 {
+		t.Errorf("stored result was read %d times, want no column validation when no column changed",
+			f.storedResultReads)
 	}
 }
 
@@ -436,8 +431,9 @@ func TestVisualizationUpdateChangesTheChartType(t *testing.T) {
 	if got := options["columnMapping"]; !reflect.DeepEqual(got, want) {
 		t.Errorf("columnMapping = %#v, want %#v kept as it was", got, want)
 	}
-	if f.probed != nil {
-		t.Errorf("probe body = %v, want no column validation when no column changed", f.probed)
+	if f.storedResultReads != 0 {
+		t.Errorf("stored result was read %d times, want no column validation when no column changed",
+			f.storedResultReads)
 	}
 }
 
@@ -489,7 +485,7 @@ func TestVisualizationUpdateRejectsTypedFlagsOnNonChart(t *testing.T) {
 		savedQueryVisualizations: []map[string]any{
 			{"id": savedVizID, "type": "COUNTER", "name": "total", "options": map[string]any{}},
 		},
-		cachedColumns: []string{"day", "count"},
+		storedColumns: []string{"day", "count"},
 	}
 	srv := f.start(t)
 
@@ -557,8 +553,9 @@ func TestVisualizationDelete(t *testing.T) {
 	if !f.deletedViz {
 		t.Error("the delete never reached the server")
 	}
-	if f.probed != nil {
-		t.Errorf("probe body = %v, want no column validation on delete", f.probed)
+	if f.storedResultReads != 0 {
+		t.Errorf("stored result was read %d times, want no column validation on delete",
+			f.storedResultReads)
 	}
 }
 
@@ -686,14 +683,14 @@ func TestVisualizationTimeoutIsATimeout(t *testing.T) {
 				"--type", "line", "--x", "day", "--y", "count"},
 		},
 		{
-			name:   "probing the cached result",
-			server: &fakeServer{hangProbe: true},
+			name:   "reading the stored result",
+			server: &fakeServer{storedColumns: []string{"day", "count"}, hangStoredResult: true},
 			args: []string{"visualization", "create", "--query", "7", "--name", "daily",
 				"--type", "line", "--x", "day", "--y", "count"},
 		},
 		{
 			name:   "creating the visualization",
-			server: &fakeServer{cachedColumns: []string{"day", "count"}, hangCreateViz: true},
+			server: &fakeServer{storedColumns: []string{"day", "count"}, hangCreateViz: true},
 			args: []string{"visualization", "create", "--query", "7", "--name", "daily",
 				"--type", "line", "--x", "day", "--y", "count"},
 		},
@@ -830,25 +827,6 @@ func TestVisualizationUpdateSwapsBothAxes(t *testing.T) {
 	}
 }
 
-// TestVisualizationUpdateRejectsIgnoredParam covers a flag that would
-// otherwise be accepted and silently discarded: --param only picks which
-// cached result the column check runs against, and no check runs when no
-// column changes.
-func TestVisualizationUpdateRejectsIgnoredParam(t *testing.T) {
-	f := withChart()
-	srv := f.start(t)
-
-	_, err := runRdsh(t, srv, "", "visualization", "update", "9", "--query", "7",
-		"--name", "renamed", "--param", "days=30")
-	if err == nil {
-		t.Fatal("error = nil, want --param refused when nothing it applies to changes")
-	}
-	if !strings.Contains(err.Error(), "--param") {
-		t.Errorf("error = %v, want it to name --param", err)
-	}
-	assertNoVisualizationSent(t, f)
-}
-
 // TestVisualizationUpdateClearsOptions covers the raw-mode edit that resets
 // a visualization to the front end's own defaults. An empty object is a
 // value, not an absent field: dropping it would report success for a call
@@ -874,28 +852,5 @@ func TestVisualizationUpdateClearsOptions(t *testing.T) {
 	}
 	if !reflect.DeepEqual(options, map[string]any{}) {
 		t.Errorf("updated options = %#v, want an empty object", options)
-	}
-}
-
-// TestVisualizationCacheMissQuotesParamValues covers the command the
-// cache-miss error tells the caller to run. An agent reading that error is
-// likely to run it as it stands, so a value with a space in it has to come
-// back as one argument rather than two.
-func TestVisualizationCacheMissQuotesParamValues(t *testing.T) {
-	f := &fakeServer{} // nothing cached
-	srv := f.start(t)
-
-	_, err := runRdsh(t, srv, "", "visualization", "create", "--query", "7", "--name", "daily",
-		"--type", "line", "--x", "day", "--y", "count",
-		"--param", "team=core eu", "--param", "days=30")
-	if err == nil {
-		t.Fatal("error = nil, want a query with no cached result refused")
-	}
-	// days needs no quoting and must not get any; team does.
-	if want := "--param days=30"; !strings.Contains(err.Error(), want) {
-		t.Errorf("error = %v, want it to carry %q unquoted", err, want)
-	}
-	if want := `--param 'team=core eu'`; !strings.Contains(err.Error(), want) {
-		t.Errorf("error = %v, want it to carry %s", err, want)
 	}
 }

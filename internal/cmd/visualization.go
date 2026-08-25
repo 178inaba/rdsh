@@ -83,7 +83,6 @@ type visualizationFlags struct {
 	chartType   string
 	x           string
 	y           []string
-	params      []string
 	optionsFile string
 	timeout     timeoutFlag
 }
@@ -97,8 +96,6 @@ func addVisualizationFlags(cmd *cobra.Command, f *visualizationFlags) {
 		"chart type: "+strings.Join(chartTypeNames, ", ")+" (with --options-file, the API type verbatim)")
 	cmd.Flags().StringVar(&f.x, "x", "", "column plotted on the x axis")
 	cmd.Flags().StringArrayVar(&f.y, "y", nil, "column plotted on the y axis, repeatable for a multi-series chart")
-	cmd.Flags().StringArrayVar(&f.params, "param", nil,
-		"parameter value as name=value, repeatable (default: the query's stored defaults)")
 	cmd.Flags().StringVar(&f.optionsFile, "options-file", "",
 		"read the raw options JSON from a file instead of composing it from --type, --x and --y")
 	addTimeoutFlag(cmd, &f.timeout, serverTimeoutUsage)
@@ -106,9 +103,6 @@ func addVisualizationFlags(cmd *cobra.Command, f *visualizationFlags) {
 	// caller composed. Mixing them would leave it unsaid which won.
 	cmd.MarkFlagsMutuallyExclusive("options-file", "x")
 	cmd.MarkFlagsMutuallyExclusive("options-file", "y")
-	// --param exists only to resolve the result the column check runs
-	// against, and raw mode runs no column check.
-	cmd.MarkFlagsMutuallyExclusive("options-file", "param")
 }
 
 // rawMode reports whether the invocation composes its options from a file
@@ -150,22 +144,22 @@ xAxis.type), which is also where every other chart setting lives.
 --y is repeatable, which is how a chart gets several series.
 
 The column names are checked before anything is created, against the result
-the query already holds — Redash stores a visualization naming a column that
-does not exist without complaint, and it renders as a blank chart nobody is
-told about. The check needs a cached result: if the query has none, nothing
-is created and the error says to run ` + "`rdsh query refresh`" + ` first. Creating a
-visualization never executes a query itself.
+the query page already holds — Redash stores a visualization naming a column
+that does not exist without complaint, and it renders as a blank chart nobody
+is told about. That stored result is read by ID, so this command never
+executes the query and never adds to its cache: a query with no result yet is
+reported as one, and nothing is created until ` + "`rdsh query refresh`" + ` has given
+it one.
 
---param name=value supplies a parameter value for that check and may be
-repeated; everything after the first = is the value. A parameter left out
-uses the default stored on the query. The values pick which cached result is
-checked, so they should be the ones the chart will be viewed with.
+Which parameter values the query was last run with does not matter here. The
+same SQL yields the same columns, so the check reads the same names whatever
+the page is viewed with.
 
 --options-file reads the raw Redash options JSON from a file instead. It is
 the way to reach chart settings and visualization types the typed flags do
 not cover: --type is then sent verbatim as the API type (CHART, COUNTER, and
-so on), --x, --y and --param are not accepted, and no column check runs — the
-file is taken on trust.`,
+so on), --x and --y are not accepted, and no column check runs — the file is
+taken on trust.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runVisualizationCreate(cmd, g, &f)
@@ -201,10 +195,6 @@ func runVisualizationCreate(cmd *cobra.Command, g *globalFlags, f *visualization
 			return errors.New("--y is required")
 		}
 	}
-	overrides, err := parseQueryParams(f.params)
-	if err != nil {
-		return err
-	}
 	// Read before the connection is even resolved, so an unreadable path
 	// fails as the invocation error it is.
 	rawOptions, err := readOptionsFile(f.optionsFile)
@@ -228,14 +218,13 @@ func runVisualizationCreate(cmd *cobra.Command, g *globalFlags, f *visualization
 
 	options, apiType := rawOptions, f.chartType
 	if !f.rawMode() {
-		// Read for the stored parameter defaults, which decide which cached
-		// result the column check is run against.
+		// Read for the result the query page holds, which is what the column
+		// check reads its columns from.
 		q, err := client.GetQuery(ctx, queryID)
 		if err != nil {
 			return timeoutOr(err, timeout, "the query")
 		}
-		if err := validateChartColumns(ctx, client, queryID, q.Options.Parameters,
-			overrides, timeout, f.x, f.y); err != nil {
+		if err := validateChartColumns(ctx, client, q, timeout, f.x, f.y); err != nil {
 			return err
 		}
 		if options, err = chartOptions(seriesType, f.x, f.y); err != nil {
@@ -284,8 +273,7 @@ passing --x alone moves the x column and leaves the y columns as they are —
 and moving one axis onto the column the other holds is refused rather than
 dropping that other axis, so swapping them means passing both at once. Any
 column passed is checked against the query's cached result exactly as on
-create; passing neither runs no check, which is also why --param needs one of
-them to mean anything.
+create; passing neither runs no check.
 
 The typed flags describe the Redash chart type, so they are refused on a
 visualization that is not one — use --options-file for those. With
@@ -313,21 +301,11 @@ func runVisualizationUpdate(cmd *cobra.Command, args []string, g *globalFlags, f
 	if f.name == "" && f.chartType == "" && f.x == "" && len(f.y) == 0 && !f.rawMode() {
 		return errors.New("nothing to change: pass --name, --type, --x, --y or --options-file")
 	}
-	// --param only picks which cached result the column check runs against,
-	// and no check runs when no column changes. Accepting it and discarding
-	// it would let a caller believe values reached the server that never did.
-	if len(f.params) > 0 && f.x == "" && len(f.y) == 0 {
-		return errors.New("--param applies only to the column check, so it needs --x or --y to do anything")
-	}
 	seriesType := ""
 	if f.chartType != "" && !f.rawMode() {
 		if seriesType, err = chartSeriesType(f.chartType); err != nil {
 			return err
 		}
-	}
-	overrides, err := parseQueryParams(f.params)
-	if err != nil {
-		return err
 	}
 	rawOptions, err := readOptionsFile(f.optionsFile)
 	if err != nil {
@@ -380,8 +358,7 @@ func runVisualizationUpdate(cmd *cobra.Command, args []string, g *globalFlags, f
 				"edit it with --options-file instead", vizID, viz.Type, visualizationTypeChart)
 		}
 		if f.x != "" || len(f.y) > 0 {
-			if err := validateChartColumns(ctx, client, queryID, q.Options.Parameters,
-				overrides, timeout, f.x, f.y); err != nil {
+			if err := validateChartColumns(ctx, client, q, timeout, f.x, f.y); err != nil {
 				return err
 			}
 		}
@@ -474,8 +451,8 @@ func runVisualizationDelete(cmd *cobra.Command, args []string, g *globalFlags, q
 // the only way to reach its stored options and the check that the ID a
 // caller typed belongs to the query they named.
 // It returns the query as well as the visualization, so a caller that goes
-// on to check columns has the stored parameter definitions without reading
-// the same query a second time.
+// on to check columns has the query's linked result without reading the same
+// query a second time.
 func findVisualization(ctx context.Context, client *redash.Client, queryID, vizID int,
 	timeout time.Duration) (*redash.Query, *redash.Visualization, error) {
 	q, err := client.GetQuery(ctx, queryID)
@@ -670,36 +647,26 @@ func patchChartOptions(stored map[string]json.RawMessage, seriesType, x string,
 // and renders as a blank chart, which a caller working through a shell
 // cannot see — so the names are checked here, before anything is written.
 //
-// It runs against the result the caller's own parameter values map to,
-// which is the result the chart renders from when the page is viewed with
-// those values. One probe is enough because the same SQL yields the same
-// columns whatever the values are; the values only decide which cached
-// result answers.
-func validateChartColumns(ctx context.Context, client *redash.Client, queryID int,
-	stored []redash.QueryParameter, overrides map[string]string, timeout time.Duration,
-	x string, ys []string) error {
-	// The query's stored parameter definitions come from the caller, which
-	// has already read it — update reads it to find the visualization, and
-	// create to get here at all — so the check adds one round trip, the
-	// probe, rather than two.
-	//
-	// The same merge `query refresh` applies: the stored defaults, with
-	// --param on top. A parameter neither covers is reported by the server
-	// from the probe, naming itself, exactly as it is there.
-	values, _ := mergeParameters(stored, overrides)
-
-	result, job, err := client.CachedQueryResult(ctx, queryID, values)
-	if err != nil {
-		return timeoutOr(err, timeout, "the query's cached result")
+// The columns come from the result the query page already holds, read by ID.
+// That is deliberately not a request that could execute anything: asking the
+// server for "whatever is cached for these parameter values" enqueues an
+// execution when there is none, and cancelling that is a race a fast query
+// wins — so a metadata command would run, and cache, the caller's query.
+// Reading the stored result by ID cannot do that.
+//
+// It is also the right result to check against: it is the one every chart on
+// the page draws from. Column names do not depend on parameter values — the
+// same SQL yields the same columns — so the values the page is viewed with
+// do not change the answer.
+func validateChartColumns(ctx context.Context, client *redash.Client, q *redash.Query,
+	timeout time.Duration, x string, ys []string) error {
+	if q.LatestQueryDataID == 0 {
+		return fmt.Errorf("query %d has no result yet, so the columns cannot be checked; "+
+			"run `rdsh query refresh %d` first", q.ID, q.ID)
 	}
-	if job != nil {
-		// No cached result, so the server started executing to make one.
-		// Creating a chart is a metadata call and must not turn into a
-		// query run behind the caller's back, so the job goes.
-		client.CancelJobBestEffort(job.ID)
-		return fmt.Errorf("query %d has no cached result for these parameter values, "+
-			"so the columns cannot be checked; run `rdsh query refresh %d`%s first",
-			queryID, queryID, refreshParamHint(overrides))
+	result, err := client.GetQueryResult(ctx, q.LatestQueryDataID)
+	if err != nil {
+		return timeoutOr(err, timeout, "the query's result")
 	}
 
 	columns := make(map[string]bool, len(result.Columns))
@@ -722,49 +689,6 @@ func validateChartColumns(ctx context.Context, client *redash.Client, queryID in
 	slices.Sort(missing)
 	return fmt.Errorf("the query's result has no column %s; its columns are %s",
 		strings.Join(missing, ", "), strings.Join(available, ", "))
-}
-
-// refreshParamHint spells the --param flags back into the refresh command
-// the error points at, so the run that fills the cache is the one this
-// probe would hit.
-func refreshParamHint(overrides map[string]string) string {
-	names := make([]string, 0, len(overrides))
-	for name := range overrides {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	var b strings.Builder
-	for _, name := range names {
-		// Quoted when it has to be, so the command in the message is one
-		// that can be run as it stands — an agent reading this error is
-		// likely to do exactly that, and a value with a space in it would
-		// otherwise turn into two arguments.
-		fmt.Fprintf(&b, " --param %s", shellArg(name+"="+overrides[name]))
-	}
-	return b.String()
-}
-
-// shellArg renders one argument for a command a caller may paste into a
-// shell, single-quoting it unless every character is plainly safe. The
-// conservative set is deliberate: quoting something that did not need it
-// costs two characters, and not quoting something that did produces a
-// command that runs and means something else.
-func shellArg(arg string) string {
-	needsQuoting := func(r rune) bool {
-		switch {
-		case r >= '0' && r <= '9', r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z':
-			return false
-		case r == '-', r == '_', r == '.', r == '/', r == '=', r == ':':
-			return false
-		}
-		return true
-	}
-	if arg != "" && !strings.ContainsFunc(arg, needsQuoting) {
-		return arg
-	}
-	// A single quote cannot appear inside single quotes, so it is closed,
-	// escaped and reopened — the standard POSIX dance.
-	return "'" + strings.ReplaceAll(arg, "'", `'''`) + "'"
 }
 
 // readOptionsFile reads the raw options JSON --options-file names. An empty

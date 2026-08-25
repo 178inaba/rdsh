@@ -39,15 +39,9 @@ type fakeRedash struct {
 	cancelStatus  int // HTTP status for DELETE, default 200
 	submittedBody map[string]any
 	refreshBody   map[string]any // body of POST /api/queries/7/results
-	// probeBody is the body of the same endpoint when the request asked for
-	// a cached result (max_age -1) rather than an execution. Kept apart
-	// from refreshBody so a probe and a refresh in one test do not
-	// overwrite each other's record.
-	probeBody map[string]any
-	// cachedColumns makes the cached-result probe answer with a result
-	// carrying these column names; nil makes it answer with a job, which
-	// is what the real server does when nothing is cached.
-	cachedColumns []string
+	// noLatestResult serves the query with no linked result, which is how a
+	// query nobody has executed reads back.
+	noLatestResult bool
 	// visualizations is what GET /api/queries/7 serves as its
 	// visualizations array; nil leaves the key out.
 	visualizations []map[string]any
@@ -163,6 +157,9 @@ func (f *fakeRedash) server() *httptest.Server {
 			"id": 7, "name": "saved", "query": "SELECT 1", "data_source_id": 3,
 			"is_draft": true, "version": f.queryVersion,
 		}
+		if !f.noLatestResult {
+			query["latest_query_data_id"] = 42
+		}
 		switch {
 		case f.nullQueryOptions:
 			query["options"] = nil
@@ -177,28 +174,8 @@ func (f *fakeRedash) server() *httptest.Server {
 	mux.HandleFunc("POST /api/queries/7/results", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			f.t.Errorf("decode results body: %v", err)
-		}
-		// The one endpoint answers both an execution (max_age 0) and a
-		// probe for whatever is cached (max_age -1), and only the latter
-		// can come back as a result rather than a job. Branching on the
-		// field the real server branches on is what keeps the two apart.
-		if maxAge, ok := body["max_age"].(float64); ok && maxAge < 0 {
-			f.probeBody = body
-			if f.cachedColumns != nil {
-				columns := make([]map[string]any, len(f.cachedColumns))
-				for i, name := range f.cachedColumns {
-					columns[i] = map[string]any{"name": name, "friendly_name": name, "type": "string"}
-				}
-				writeJSON(w, map[string]any{"query_result": map[string]any{"data": map[string]any{
-					"columns": columns, "rows": []map[string]any{},
-				}}})
-				return
-			}
-		} else {
-			f.refreshBody = body
+		if err := json.NewDecoder(r.Body).Decode(&f.refreshBody); err != nil {
+			f.t.Errorf("decode refresh body: %v", err)
 		}
 		writeJSON(w, map[string]any{"job": map[string]any{"id": "job-1", "status": 1}})
 	})
@@ -1148,75 +1125,46 @@ func TestListQueriesNoMatches(t *testing.T) {
 	}
 }
 
-// TestCachedQueryResultServesTheCache pins the probe's cache-hit half: a
-// result comes back and no job is started, which is what lets a caller
-// check column names without executing anything.
-func TestCachedQueryResultServesTheCache(t *testing.T) {
-	f := &fakeRedash{t: t, cachedColumns: []string{"day", "count"}}
+// TestGetQueryResultReadsTheStoredResult pins the read that lets a chart's
+// column names be checked without executing anything: the query reports the
+// result it is linked to, and that result is fetched by ID.
+func TestGetQueryResultReadsTheStoredResult(t *testing.T) {
+	f := &fakeRedash{t: t}
 	srv := f.server()
 	defer srv.Close()
 
-	result, job, err := newTestClient(srv, "k").CachedQueryResult(context.Background(), 7,
-		map[string]any{"days": json.Number("7")})
+	c := newTestClient(srv, "k")
+	q, err := c.GetQuery(context.Background(), 7)
 	if err != nil {
-		t.Fatalf("CachedQueryResult() error = %v", err)
+		t.Fatalf("GetQuery() error = %v", err)
 	}
-	if job != nil {
-		t.Errorf("job = %+v, want none when a result is cached", job)
-	}
-	if result == nil {
-		t.Fatal("result = nil, want the cached result")
-	}
-	if len(result.Columns) != 2 || result.Columns[0].Name != "day" || result.Columns[1].Name != "count" {
-		t.Errorf("Columns = %+v, want day, count", result.Columns)
+	if q.LatestQueryDataID != 42 {
+		t.Fatalf("LatestQueryDataID = %d, want 42", q.LatestQueryDataID)
 	}
 
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	// -1 rather than 0: it accepts a cached result of any age, where 0
-	// would skip the cache and always execute.
-	if maxAge, ok := f.probeBody["max_age"]; !ok || maxAge != float64(-1) {
-		t.Errorf("probe max_age = %v (present=%v), want -1", maxAge, ok)
+	result, err := c.GetQueryResult(context.Background(), q.LatestQueryDataID)
+	if err != nil {
+		t.Fatalf("GetQueryResult() error = %v", err)
 	}
-	if want := map[string]any{"days": float64(7)}; !reflect.DeepEqual(f.probeBody["parameters"], want) {
-		t.Errorf("probe parameters = %#v, want %#v", f.probeBody["parameters"], want)
-	}
-	// Absent for the same reason a refresh leaves it out: the key changes
-	// the query text, and the text is what the cache is matched by, so
-	// sending it would probe for a result the query page never shows.
-	if _, ok := f.probeBody["apply_auto_limit"]; ok {
-		t.Errorf("probe apply_auto_limit = %v, want the key left out", f.probeBody["apply_auto_limit"])
+	if len(result.Columns) != 2 || result.Columns[0].Name != "id" || result.Columns[1].Name != "name" {
+		t.Errorf("Columns = %+v, want id, name", result.Columns)
 	}
 }
 
-// TestCachedQueryResultReportsTheJob pins the cache-miss half: the server
-// enqueues an execution instead of answering, and the job has to reach the
-// caller so it can be cancelled rather than left running.
-func TestCachedQueryResultReportsTheJob(t *testing.T) {
-	f := &fakeRedash{t: t} // no cachedColumns: nothing is cached
+// TestGetQueryWithoutAResult covers the query nobody has executed, which is
+// what sends `rdsh visualization create` to `rdsh query refresh` rather than
+// letting it check columns against nothing.
+func TestGetQueryWithoutAResult(t *testing.T) {
+	f := &fakeRedash{t: t, noLatestResult: true}
 	srv := f.server()
 	defer srv.Close()
 
-	result, job, err := newTestClient(srv, "k").CachedQueryResult(context.Background(), 7, nil)
+	q, err := newTestClient(srv, "k").GetQuery(context.Background(), 7)
 	if err != nil {
-		t.Fatalf("CachedQueryResult() error = %v", err)
+		t.Fatalf("GetQuery() error = %v", err)
 	}
-	if result != nil {
-		t.Errorf("result = %+v, want none when nothing is cached", result)
-	}
-	if job == nil {
-		t.Fatal("job = nil, want the job the server enqueued")
-	}
-	if job.ID != "job-1" {
-		t.Errorf("job ID = %q, want job-1", job.ID)
-	}
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	// The same empty-object normalisation a refresh does: a present null
-	// defeats the field's server-side default and fails the request.
-	if params, ok := f.probeBody["parameters"]; !ok || !reflect.DeepEqual(params, map[string]any{}) {
-		t.Errorf("probe parameters = %#v (present=%v), want an empty object", params, ok)
+	if q.LatestQueryDataID != 0 {
+		t.Errorf("LatestQueryDataID = %d, want 0", q.LatestQueryDataID)
 	}
 }
 
