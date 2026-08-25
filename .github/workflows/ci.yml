@@ -84,12 +84,24 @@ jobs:
       # carries them on, since the step below runs in a shell of its own.
       - name: Start the Redash sandbox
         run: |
-          eval "$(scripts/redash-up.sh)"
+          # Assigned before it is evaluated, because the exit status of a
+          # command substitution does not reach `eval`: a bring-up that failed
+          # would leave this step green — the script prints the export lines
+          # only on success, so eval would evaluate nothing — and the step
+          # below would report a sandbox that was never started.
+          env_lines=$(scripts/redash-up.sh)
+          eval "$env_lines"
           { echo "RDSH_URL=$RDSH_URL"; echo "RDSH_API_KEY=$RDSH_API_KEY"; } >> "$GITHUB_ENV"
       # Scoped to the suite this job is named for rather than ./...: the tag
       # only adds the e2e files to the build, so ./... would run every unit
       # test a second time and let one redden a check that is about Redash.
-      - run: go test -tags e2e ./e2e/
+      #
+      # -count=1 because go's test cache keys on the test binary and the
+      # environment and not on the server the tests talk to. The bump this job
+      # exists to catch — a new redash/redash tag in compose.yaml — changes no
+      # Go input at all, so a cache restored from an earlier run would report a
+      # pass that never reached Redash.
+      - run: go test -tags e2e -count=1 ./e2e/
       # Without this a red run says which assertion failed and nothing about
       # what the sandbox was doing when it did.
       - name: Dump the sandbox logs
