@@ -22,14 +22,7 @@ const planPattern = "^(free|team|enterprise)$"
 func TestParameterDefinitionsSurviveARoundTrip(t *testing.T) {
 	id := createParametrizedQuery(t)
 
-	want := []map[string]any{
-		{"name": "since", "title": "since", "type": "date", "value": "2026-01-01"},
-		// A number default is stored as JSON's number rather than as the
-		// text it was typed as, which is how the Redash UI writes one — and
-		// the query hashes to the same text either tool saved it.
-		{"name": "seats", "title": "seats", "type": "number", "value": json.Number("5")},
-		{"name": "plan", "title": "plan", "type": "text-pattern", "value": "free", "regex": planPattern},
-	}
+	want := wantParameters("since", "2026-01-01")
 	if got := storedParameters(t, id); !reflect.DeepEqual(got, want) {
 		t.Errorf("options.parameters = %+v, want %+v", got, want)
 	}
@@ -49,19 +42,15 @@ func TestQueryUpdateKeepsWhatNoFlagNames(t *testing.T) {
 	// can, and apply_auto_limit is a key of the options object itself rather
 	// than of any parameter.
 	const title = "Signed up since"
-	options := storedOptions(t, id)
+	options, version := storedOptions(t, id)
 	parametersOf(t, options)[0]["title"] = title
 	options["apply_auto_limit"] = true
-	writeOptions(t, id, options)
+	writeOptions(t, id, options, version)
 
 	runRdsh(t, "query", "update", strconv.Itoa(id), "--param-default", "since=2026-02-01").assertExit(t, 0)
 
-	updated := storedOptions(t, id)
-	want := []map[string]any{
-		{"name": "since", "title": title, "type": "date", "value": "2026-02-01"},
-		{"name": "seats", "title": "seats", "type": "number", "value": json.Number("5")},
-		{"name": "plan", "title": "plan", "type": "text-pattern", "value": "free", "regex": planPattern},
-	}
+	updated, _ := storedOptions(t, id)
+	want := wantParameters(title, "2026-02-01")
 	if got := parametersOf(t, updated); !reflect.DeepEqual(got, want) {
 		t.Errorf("options.parameters = %+v, want %+v", got, want)
 	}
@@ -78,12 +67,12 @@ func TestQueryUpdateKeepsWhatNoFlagNames(t *testing.T) {
 func TestQueryUpdateRefusesAParameterTypeItCannotWrite(t *testing.T) {
 	id := createParametrizedQuery(t)
 
-	options := storedOptions(t, id)
+	options, version := storedOptions(t, id)
 	plan := parametersOf(t, options)[2]
 	plan["type"] = "enum"
 	plan["enumOptions"] = "free\nteam\nenterprise"
 	delete(plan, "regex")
-	writeOptions(t, id, options)
+	writeOptions(t, id, options, version)
 	before := storedParameters(t, id)
 
 	got := runRdsh(t, "query", "update", strconv.Itoa(id), "--param-default", "plan=team")
@@ -122,21 +111,42 @@ func createParametrizedQuery(t *testing.T) int {
 	return queryID(t, created.stdout)
 }
 
-// storedOptions reads the query's options object as Redash holds it. It has
-// to come from the API: writeQueryDetail prints a query's SQL and metadata
-// and not its options, so no rdsh output carries the definitions.
-func storedOptions(t *testing.T, id int) map[string]any {
+// storedOptions reads the query's options object as Redash holds it, along
+// with the version an update of it has to carry. Both come from one read
+// because they belong to each other: a version fetched separately would not
+// be the one the options were read at.
+//
+// The options have to come from the API at all because writeQueryDetail
+// prints a query's SQL and metadata and not its options, so no rdsh output
+// carries the definitions.
+func storedOptions(t *testing.T, id int) (map[string]any, any) {
 	t.Helper()
-	options, ok := getQuery(t, id)["options"].(map[string]any)
+	query := getQuery(t, id)
+	options, ok := query["options"].(map[string]any)
 	if !ok {
 		t.Fatalf("query %d carries no options object", id)
 	}
-	return options
+	return options, query["version"]
 }
 
 func storedParameters(t *testing.T, id int) []map[string]any {
 	t.Helper()
-	return parametersOf(t, storedOptions(t, id))
+	options, _ := storedOptions(t, id)
+	return parametersOf(t, options)
+}
+
+// wantParameters is what createParametrizedQuery writes, with the one entry
+// the update below touches left to the caller. Written once so that what an
+// update has to leave alone is the same literal on both sides of it.
+func wantParameters(sinceTitle, sinceValue string) []map[string]any {
+	return []map[string]any{
+		{"name": "since", "title": sinceTitle, "type": "date", "value": sinceValue},
+		// A number default is stored as JSON's number rather than as the text
+		// it was typed as, which is how the Redash UI writes one — and the
+		// query hashes to the same text either tool saved it.
+		{"name": "seats", "title": "seats", "type": "number", "value": json.Number("5")},
+		{"name": "plan", "title": "plan", "type": "text-pattern", "value": "free", "regex": planPattern},
+	}
 }
 
 // parametersOf returns the definitions in the order they are stored. The
@@ -165,10 +175,10 @@ func parametersOf(t *testing.T, options map[string]any) []map[string]any {
 // the first place. The whole object has to be sent: Redash replaces it
 // rather than merging into it, so a partial write would delete the very
 // definitions these tests go on to check.
-func writeOptions(t *testing.T, id int, options map[string]any) {
+func writeOptions(t *testing.T, id int, options map[string]any, version any) {
 	t.Helper()
 	redashDo(t, http.MethodPost, queryPath(id), map[string]any{
 		"options": options,
-		"version": getQuery(t, id)["version"],
+		"version": version,
 	})
 }

@@ -86,7 +86,10 @@ jobs:
         run: |
           eval "$(scripts/redash-up.sh)"
           { echo "RDSH_URL=$RDSH_URL"; echo "RDSH_API_KEY=$RDSH_API_KEY"; } >> "$GITHUB_ENV"
-      - run: go test -tags e2e ./...
+      # Scoped to the suite this job is named for rather than ./...: the tag
+      # only adds the e2e files to the build, so ./... would run every unit
+      # test a second time and let one redden a check that is about Redash.
+      - run: go test -tags e2e ./e2e/
       # Without this a red run says which assertion failed and nothing about
       # what the sandbox was doing when it did.
       - name: Dump the sandbox logs
