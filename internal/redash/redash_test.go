@@ -54,7 +54,7 @@ type fakeRedash struct {
 	createdViz     map[string]any // body of POST /api/visualizations
 	updatedViz     map[string]any // body of POST /api/visualizations/9
 	deletedViz     bool           // DELETE /api/visualizations/9 arrived
-	queryOptions  map[string]any // options served by GET /api/queries/7
+	queryOptions   map[string]any // options served by GET /api/queries/7
 	// nullQueryOptions serves options as an explicit null instead, which is
 	// a different shape from the key being absent.
 	nullQueryOptions bool

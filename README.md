@@ -147,7 +147,11 @@ rdsh visualization update 7 --query 42 --type bar
 rdsh visualization delete 7 --query 42
 ```
 
-Because `columnMapping` is keyed by column name, passing `--x` alone moves the x column and leaves the y columns alone.
+Because `columnMapping` is keyed by column name, passing `--x` alone moves the x column and leaves the y columns alone — and a column can hold only one role, so moving one axis onto the column the other holds is refused rather than silently dropping that other axis. Swapping them means naming both in the same call:
+
+```sh
+rdsh visualization update 7 --query 42 --x count --y day
+```
 
 For chart settings and visualization types the typed flags do not reach — counters, tables, anything configured in depth — `--options-file` passes the raw Redash options JSON through and sends `--type` verbatim as the API type. It skips the column check, so the file is taken on trust:
 

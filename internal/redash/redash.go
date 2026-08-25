@@ -134,9 +134,13 @@ type NewVisualization struct {
 // composed from one that was just read rather than from nothing — which is
 // what keeps a rename from clearing the chart's settings.
 type VisualizationUpdate struct {
-	Type    *string                    `json:"type,omitempty"`
-	Name    *string                    `json:"name,omitempty"`
-	Options map[string]json.RawMessage `json:"options,omitempty"`
+	Type *string `json:"type,omitempty"`
+	Name *string `json:"name,omitempty"`
+	// Options is a pointer for the same reason Type and Name are: an empty
+	// object is a value — it resets the visualization to the front end's own
+	// defaults — and a plain map with omitempty could not tell that apart
+	// from an edit that leaves the options alone.
+	Options *map[string]json.RawMessage `json:"options,omitempty"`
 }
 
 // QueryOptions is a saved query's options object. Redash's update replaces

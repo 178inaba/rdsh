@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -221,7 +221,10 @@ func runVisualizationCreate(cmd *cobra.Command, g *globalFlags, f *visualization
 			overrides, timeout, f.x, f.y); err != nil {
 			return err
 		}
-		options, apiType = chartOptions(seriesType, f.x, f.y), visualizationTypeChart
+		if options, err = chartOptions(seriesType, f.x, f.y); err != nil {
+			return err
+		}
+		apiType = visualizationTypeChart
 	}
 
 	// A create the deadline cuts off is an ordinary timeout, for the reason
@@ -260,9 +263,12 @@ the flags name are replaced, and everything else — settings chosen in the
 Redash UI included — is sent back as it was.
 
 --x and --y move the axes. Because columnMapping is keyed by column name,
-passing --x alone moves the x column and leaves the y columns as they are.
-Any column passed is checked against the query's cached result exactly as on
-create; passing neither runs no check.
+passing --x alone moves the x column and leaves the y columns as they are —
+and moving one axis onto the column the other holds is refused rather than
+dropping that other axis, so swapping them means passing both at once. Any
+column passed is checked against the query's cached result exactly as on
+create; passing neither runs no check, which is also why --param needs one of
+them to mean anything.
 
 The typed flags describe the Redash chart type, so they are refused on a
 visualization that is not one — use --options-file for those. With
@@ -289,6 +295,12 @@ func runVisualizationUpdate(cmd *cobra.Command, args []string, g *globalFlags, f
 	// request that means nothing, which is what `query update` does too.
 	if f.name == "" && f.chartType == "" && f.x == "" && len(f.y) == 0 && !f.rawMode() {
 		return errors.New("nothing to change: pass --name, --type, --x, --y or --options-file")
+	}
+	// --param only picks which cached result the column check runs against,
+	// and no check runs when no column changes. Accepting it and discarding
+	// it would let a caller believe values reached the server that never did.
+	if len(f.params) > 0 && f.x == "" && len(f.y) == 0 {
+		return errors.New("--param applies only to the column check, so it needs --x or --y to do anything")
 	}
 	seriesType := ""
 	if f.chartType != "" && !f.rawMode() {
@@ -324,7 +336,12 @@ func runVisualizationUpdate(cmd *cobra.Command, args []string, g *globalFlags, f
 		return err
 	}
 
-	update := redash.VisualizationUpdate{Options: rawOptions}
+	update := redash.VisualizationUpdate{}
+	if f.rawMode() {
+		// A pointer to the decoded object, empty or not: the file replaces
+		// the whole options object, and an empty one says so deliberately.
+		update.Options = &rawOptions
+	}
 	if f.name != "" {
 		update.Name = &f.name
 	}
@@ -351,9 +368,11 @@ func runVisualizationUpdate(cmd *cobra.Command, args []string, g *globalFlags, f
 				return err
 			}
 		}
-		if update.Options, err = patchChartOptions(viz.Options, seriesType, f.x, f.y); err != nil {
+		patched, err := patchChartOptions(viz.Options, seriesType, f.x, f.y)
+		if err != nil {
 			return err
 		}
+		update.Options = &patched
 	}
 	return applyVisualizationUpdate(ctx, cmd, client, vizID, queryID, update, timeout)
 }
@@ -484,11 +503,15 @@ func chartSeriesType(name string) (string, error) {
 // setting left out keeps whatever default that Redash version has — where
 // writing them out would freeze today's defaults into the chart and grow the
 // surface that can drift out of step with the schema.
-func chartOptions(seriesType, x string, ys []string) map[string]json.RawMessage {
+func chartOptions(seriesType, x string, ys []string) (map[string]json.RawMessage, error) {
 	mapping := make(map[string]string, len(ys)+1)
 	mapping[x] = columnRoleX
 	for _, y := range ys {
 		mapping[y] = columnRoleY
+	}
+	// Nothing was there before, so both axes have to be here now.
+	if err := checkAxesSurvive(nil, mapping); err != nil {
+		return nil, err
 	}
 	// Both values are composed here from strings, so neither can fail to
 	// encode and the errors json.Marshal declares cannot occur.
@@ -497,7 +520,65 @@ func chartOptions(seriesType, x string, ys []string) map[string]json.RawMessage 
 	return map[string]json.RawMessage{
 		globalSeriesTypeKey: seriesJSON,
 		columnMappingKey:    mappingJSON,
+	}, nil
+}
+
+// hasRole reports whether any column in the mapping carries the role.
+func hasRole(mapping map[string]string, role string) bool {
+	for _, assigned := range mapping {
+		if assigned == role {
+			return true
+		}
 	}
+	return false
+}
+
+// checkAxesSurvive reports a composed columnMapping that has silently lost
+// an axis. The map is keyed by column name, so naming one column for two
+// roles is not a conflict it can hold: the second assignment replaces the
+// first and the axis that column used to carry is simply gone. Every name
+// involved is a real column, so the column check passes and the chart is
+// stored rendering nothing — the very failure the typed flags exist to
+// prevent.
+//
+// before is the mapping as it was stored, or nil when the visualization is
+// being created and both axes are therefore required outright. An edit is
+// held only to what was already there, so a chart that never had an axis is
+// not made to grow one here.
+func checkAxesSurvive(before, after map[string]string) error {
+	for _, role := range []string{columnRoleX, columnRoleY} {
+		if before != nil && !hasRole(before, role) {
+			continue
+		}
+		if hasRole(after, role) {
+			continue
+		}
+		return fmt.Errorf("the columns given leave the chart with no %s column, because %q is now "+
+			"its %s column and a column can hold only one role; "+
+			"pass --x and --y together to move both at once",
+			role, columnFor(after, otherRole(role)), otherRole(role))
+	}
+	return nil
+}
+
+// otherRole is the axis a role displaces when the two collide.
+func otherRole(role string) string {
+	if role == columnRoleX {
+		return columnRoleY
+	}
+	return columnRoleX
+}
+
+// columnFor names a column holding the role, for the error above. The
+// mapping is a map, so with several columns on one axis which is named is
+// arbitrary — but the collision it reports can only involve one.
+func columnFor(mapping map[string]string, role string) string {
+	for column, assigned := range mapping {
+		if assigned == role {
+			return column
+		}
+	}
+	return ""
 }
 
 // patchChartOptions applies the typed flags to a stored options blob and
@@ -522,12 +603,16 @@ func patchChartOptions(stored map[string]json.RawMessage, seriesType, x string,
 		return options, nil
 	}
 
-	mapping := map[string]string{}
+	before := map[string]string{}
 	if raw, ok := stored[columnMappingKey]; ok {
-		if err := json.Unmarshal(raw, &mapping); err != nil {
+		if err := json.Unmarshal(raw, &before); err != nil {
 			return nil, fmt.Errorf("the visualization's stored %s is not a map of column names to roles, "+
 				"so --x and --y cannot edit it; use --options-file: %w", columnMappingKey, err)
 		}
+	}
+	mapping := make(map[string]string, len(before)+len(ys)+1)
+	for column, role := range before {
+		mapping[column] = role
 	}
 	// The map is keyed by column name rather than by role, so moving an axis
 	// means dropping whatever held that role before. Replacing one axis
@@ -547,6 +632,12 @@ func patchChartOptions(stored map[string]json.RawMessage, seriesType, x string,
 	}
 	if len(ys) > 0 {
 		replace(columnRoleY, ys)
+	}
+	// Both replacements are applied before this runs, so naming both axes at
+	// once — swapping them — is the ordinary edit it looks like, while
+	// moving one onto the other's column is caught.
+	if err := checkAxesSurvive(before, mapping); err != nil {
+		return nil, err
 	}
 
 	mappingJSON, err := json.Marshal(mapping)
@@ -611,7 +702,7 @@ func validateChartColumns(ctx context.Context, client *redash.Client, queryID in
 	for _, c := range result.Columns {
 		available = append(available, c.Name)
 	}
-	sort.Strings(missing)
+	slices.Sort(missing)
 	return fmt.Errorf("the query's result has no column %s; its columns are %s",
 		strings.Join(missing, ", "), strings.Join(available, ", "))
 }
@@ -624,12 +715,39 @@ func refreshParamHint(overrides map[string]string) string {
 	for name := range overrides {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	var b strings.Builder
 	for _, name := range names {
-		fmt.Fprintf(&b, " --param %s=%s", name, overrides[name])
+		// Quoted when it has to be, so the command in the message is one
+		// that can be run as it stands — an agent reading this error is
+		// likely to do exactly that, and a value with a space in it would
+		// otherwise turn into two arguments.
+		fmt.Fprintf(&b, " --param %s", shellArg(name+"="+overrides[name]))
 	}
 	return b.String()
+}
+
+// shellArg renders one argument for a command a caller may paste into a
+// shell, single-quoting it unless every character is plainly safe. The
+// conservative set is deliberate: quoting something that did not need it
+// costs two characters, and not quoting something that did produces a
+// command that runs and means something else.
+func shellArg(arg string) string {
+	needsQuoting := func(r rune) bool {
+		switch {
+		case r >= '0' && r <= '9', r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z':
+			return false
+		case r == '-', r == '_', r == '.', r == '/', r == '=', r == ':':
+			return false
+		}
+		return true
+	}
+	if arg != "" && !strings.ContainsFunc(arg, needsQuoting) {
+		return arg
+	}
+	// A single quote cannot appear inside single quotes, so it is closed,
+	// escaped and reopened — the standard POSIX dance.
+	return "'" + strings.ReplaceAll(arg, "'", `'''`) + "'"
 }
 
 // readOptionsFile reads the raw options JSON --options-file names. An empty

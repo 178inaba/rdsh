@@ -764,3 +764,138 @@ func TestVisualizationReadsTheQueryOnce(t *testing.T) {
 		})
 	}
 }
+
+// TestVisualizationRejectsColumnRoleCollisions covers the way the typed
+// flags could still store a chart that renders nothing — the failure the
+// column check exists to prevent. columnMapping is keyed by column name, so
+// naming one column for two roles is not a conflict the map can hold: the
+// second assignment replaces the first and the axis it displaced is simply
+// gone. Every name involved exists in the result, so the column check
+// passes and Redash stores it without complaint.
+func TestVisualizationRejectsColumnRoleCollisions(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{
+			// Both roles asked for the same column, so the mapping ends up
+			// with a y and no x at all.
+			name: "create with one column on both axes",
+			args: []string{"visualization", "create", "--query", "7", "--name", "daily",
+				"--type", "line", "--x", "day", "--y", "day"},
+		},
+		{
+			// count is the stored y column; moving it to x leaves the chart
+			// with no y column.
+			name: "update moving the y column onto x",
+			args: []string{"visualization", "update", "9", "--query", "7", "--x", "count"},
+		},
+		{
+			// day is the stored x column; the mirror of the case above.
+			name: "update moving the x column onto y",
+			args: []string{"visualization", "update", "9", "--query", "7", "--y", "day"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := withChart()
+			srv := f.start(t)
+
+			_, err := runRdsh(t, srv, "", tt.args...)
+			if err == nil {
+				t.Fatal("error = nil, want a mapping that loses an axis refused")
+			}
+			assertNoVisualizationSent(t, f)
+		})
+	}
+}
+
+// TestVisualizationUpdateSwapsBothAxes is the case the check above must not
+// catch: naming both axes at once moves each column to the other role, which
+// leaves the chart with an x and a y and is a perfectly ordinary edit.
+func TestVisualizationUpdateSwapsBothAxes(t *testing.T) {
+	f := withChart()
+	srv := f.start(t)
+
+	if _, err := runRdsh(t, srv, "", "visualization", "update", "9", "--query", "7",
+		"--x", "count", "--y", "day"); err != nil {
+		t.Fatalf("visualization update error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	want := map[string]any{"count": "x", "day": "y"}
+	if got := vizOptions(t, f.updatedViz)["columnMapping"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("columnMapping = %#v, want %#v", got, want)
+	}
+}
+
+// TestVisualizationUpdateRejectsIgnoredParam covers a flag that would
+// otherwise be accepted and silently discarded: --param only picks which
+// cached result the column check runs against, and no check runs when no
+// column changes.
+func TestVisualizationUpdateRejectsIgnoredParam(t *testing.T) {
+	f := withChart()
+	srv := f.start(t)
+
+	_, err := runRdsh(t, srv, "", "visualization", "update", "9", "--query", "7",
+		"--name", "renamed", "--param", "days=30")
+	if err == nil {
+		t.Fatal("error = nil, want --param refused when nothing it applies to changes")
+	}
+	if !strings.Contains(err.Error(), "--param") {
+		t.Errorf("error = %v, want it to name --param", err)
+	}
+	assertNoVisualizationSent(t, f)
+}
+
+// TestVisualizationUpdateClearsOptions covers the raw-mode edit that resets
+// a visualization to the front end's own defaults. An empty object is a
+// value, not an absent field: dropping it would report success for a call
+// that changed nothing.
+func TestVisualizationUpdateClearsOptions(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "empty.json")
+	if err := os.WriteFile(file, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := withChart()
+	srv := f.start(t)
+
+	if _, err := runRdsh(t, srv, "", "visualization", "update", "9", "--query", "7",
+		"--options-file", file); err != nil {
+		t.Fatalf("visualization update error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	options, ok := f.updatedViz["options"]
+	if !ok {
+		t.Fatalf("updated body = %v, want an options key carrying the empty object", f.updatedViz)
+	}
+	if !reflect.DeepEqual(options, map[string]any{}) {
+		t.Errorf("updated options = %#v, want an empty object", options)
+	}
+}
+
+// TestVisualizationCacheMissQuotesParamValues covers the command the
+// cache-miss error tells the caller to run. An agent reading that error is
+// likely to run it as it stands, so a value with a space in it has to come
+// back as one argument rather than two.
+func TestVisualizationCacheMissQuotesParamValues(t *testing.T) {
+	f := &fakeServer{} // nothing cached
+	srv := f.start(t)
+
+	_, err := runRdsh(t, srv, "", "visualization", "create", "--query", "7", "--name", "daily",
+		"--type", "line", "--x", "day", "--y", "count",
+		"--param", "team=core eu", "--param", "days=30")
+	if err == nil {
+		t.Fatal("error = nil, want a query with no cached result refused")
+	}
+	// days needs no quoting and must not get any; team does.
+	if want := "--param days=30"; !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %v, want it to carry %q unquoted", err, want)
+	}
+	if want := `--param 'team=core eu'`; !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %v, want it to carry %s", err, want)
+	}
+}
