@@ -21,7 +21,10 @@ func savedQueryURL(srv *httptest.Server) string {
 }
 
 func TestQueryCreatePublishesAndPrintsURL(t *testing.T) {
-	f := &fakeServer{}
+	// The create answers with a result linked, so the URL really is the
+	// whole output: both streams share one buffer here, and the notice an
+	// unlinked create prints would count as a second line.
+	f := &fakeServer{createLinksResult: true}
 	srv := f.start(t)
 
 	out, err := runRdsh(t, srv, "", "query", "create", "--name", "signups", "SELECT 1", "--data-source", "5")
@@ -46,7 +49,7 @@ func TestQueryCreatePublishesAndPrintsURL(t *testing.T) {
 // else's list: the second call is what publishes, so --draft must skip it
 // rather than send is_draft true (which is what the query already is).
 func TestQueryCreateDraft(t *testing.T) {
-	f := &fakeServer{}
+	f := &fakeServer{createLinksResult: true}
 	srv := f.start(t)
 
 	out, err := runRdsh(t, srv, "", "query", "create", "--name", "part", "--draft", "SELECT 1", "--data-source", "5")
@@ -61,6 +64,65 @@ func TestQueryCreateDraft(t *testing.T) {
 	defer f.mu.Unlock()
 	if f.updated != nil {
 		t.Errorf("publish body = %v, want no publish request at all", f.updated)
+	}
+}
+
+// TestQueryCreateNoticesAnEmptyPage covers what this command used to report
+// as an unqualified success: a query saved on a Redash that links no result
+// as it saves opens empty, and nothing said so. The URL is still the whole
+// of stdout and the run still succeeds — the page is what is missing, not
+// the query.
+func TestQueryCreateNoticesAnEmptyPage(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	out, errOut, err := runRdshSplit(t, srv, "query", "create", "--name", "signups", "SELECT 1",
+		"--data-source", "5")
+	if err != nil {
+		t.Fatalf("query create error = %v", err)
+	}
+	if want := savedQueryURL(srv) + "\n"; out != want {
+		t.Errorf("stdout = %q, want %q and nothing else", out, want)
+	}
+	assertRefreshNotice(t, errOut)
+}
+
+// TestQueryCreateLinkedResultIsSilent is the other half: a create that comes
+// back with a result on the page has nothing to report, so the notice must
+// not fire for everyone on a current Redash.
+func TestQueryCreateLinkedResultIsSilent(t *testing.T) {
+	f := &fakeServer{createLinksResult: true}
+	srv := f.start(t)
+
+	_, errOut, err := runRdshSplit(t, srv, "query", "create", "--name", "signups", "SELECT 1",
+		"--data-source", "5")
+	if err != nil {
+		t.Fatalf("query create error = %v", err)
+	}
+	assertNoNote(t, errOut)
+}
+
+// TestQueryCreateDraftNoticesAnEmptyPage pins that the notice is not about
+// publishing: a draft is saved to be referenced as query_<id>, which needs a
+// result just as much as a page a colleague opens does.
+func TestQueryCreateDraftNoticesAnEmptyPage(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	_, errOut, err := runRdshSplit(t, srv, "query", "create", "--name", "part", "--draft", "SELECT 1",
+		"--data-source", "5")
+	if err != nil {
+		t.Fatalf("query create --draft error = %v", err)
+	}
+	assertRefreshNotice(t, errOut)
+}
+
+// assertRefreshNotice checks the one thing a caller can act on: the command
+// that fills the page, named with the query's own ID.
+func assertRefreshNotice(t *testing.T, errOut string) {
+	t.Helper()
+	if want := fmt.Sprintf("rdsh query refresh %d", savedQueryID); !strings.Contains(errOut, want) {
+		t.Errorf("stderr = %q, want it to name %q", errOut, want)
 	}
 }
 

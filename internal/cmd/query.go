@@ -41,8 +41,14 @@ func newQueryCreateCmd(g *globalFlags) *cobra.Command {
 		Long: `Save SQL as a Redash query and print its URL.
 
 SQL is taken from the argument, from --file, or from stdin when neither is
-given. Run the same SQL with ` + "`rdsh run`" + ` first and Redash attaches that
-result to the new query, so the URL opens with data already on it.
+given.
+
+A new query opens with data on it only if a result is linked to it. Running
+the same SQL with ` + "`rdsh run`" + ` first links one on Redash 26.3.0 and later,
+which fills the page at no further cost; older versions link a result only
+when the saved query is executed. Nothing here reads the server's version:
+when the query comes back with no result on its page, a line saying so and
+naming ` + "`rdsh query refresh`" + ` goes to stderr, and the command still exits 0.
 
 The query is published unless --draft is given.
 
@@ -167,7 +173,27 @@ func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout(), url)
+	// Read from the create's own response rather than by asking again: a
+	// version that links a result as the query is saved commits that link
+	// before the response is serialized, so what came back already says.
+	if q.LatestQueryDataID == 0 {
+		fmt.Fprintln(cmd.ErrOrStderr(), unlinkedResultNotice(q.ID))
+	}
 	return nil
+}
+
+// unlinkedResultNotice is what a create that saved the query without a
+// result on its page reports. Like staleCacheNotice it is a note rather
+// than a failure: the query is saved and its URL is on stdout, which is
+// what was asked for — only the page behind it is empty, and filling it
+// costs an execution the caller did not ask for.
+//
+// A function rather than a constant because the recovery names the query,
+// and an agent that cannot copy the command out of the line would have to
+// compose it from the URL.
+func unlinkedResultNotice(id int) string {
+	return fmt.Sprintf("saved with no result on its page, so it opens empty; "+
+		"run `rdsh query refresh %d` to fill it", id)
 }
 
 func newQueryUpdateCmd(g *globalFlags) *cobra.Command {
