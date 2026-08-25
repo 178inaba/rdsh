@@ -28,6 +28,7 @@ const (
 	updateRequest      = "update"
 	getQueryRequest    = "get query"
 	listQueriesRequest = "list queries"
+	createVizRequest   = "create visualization"
 )
 
 // savedQueryID is the ID the fake gives every query it is asked to save,
@@ -35,6 +36,9 @@ const (
 const (
 	savedQueryID      = 7
 	savedQueryVersion = 3
+	// savedVizID is the ID the fake gives the visualization it holds, and
+	// the one it accepts an update or a delete for.
+	savedVizID = 9
 )
 
 // defaultSavedQuerySQL is the SQL the fake serves for that query unless a
@@ -59,6 +63,10 @@ type fakeServer struct {
 	hangGet         bool // GET /api/queries/<id> never answers
 	conflict        bool // POST /api/queries/<id> returns 409
 	hangListQueries bool // GET /api/queries never answers
+	hangProbe       bool // the cached-result probe never answers
+	hangCreateViz   bool // POST /api/visualizations never answers
+	hangUpdateViz   bool // POST /api/visualizations/<id> never answers
+	hangDeleteViz   bool // DELETE /api/visualizations/<id> never answers
 	savedQueries    int  // queries the listing endpoints hold
 	// savedQuerySQL is the SQL GET /api/queries/<id> serves; empty means
 	// defaultSavedQuerySQL. A test that reads the SQL back sets it, which is
@@ -76,6 +84,10 @@ type fakeServer struct {
 	// visualizations array; nil leaves the key out, which is what a query
 	// with no charts on it reads back as.
 	savedQueryVisualizations []map[string]any
+	// cachedColumns makes the cached-result probe answer with a result
+	// carrying these column names. Nil makes it answer with a job instead,
+	// which is what the real server does when nothing is cached.
+	cachedColumns []string
 	// missingParameter makes the execution endpoint refuse the way Redash
 	// refuses a placeholder it was given no value for: a failed job rather
 	// than a message, and an HTTP 400.
@@ -85,8 +97,18 @@ type fakeServer struct {
 	fetched          bool           // GET /api/queries/<id> arrived
 	listedSources    bool           // GET /api/data_sources arrived
 	created          map[string]any // body of POST /api/queries
-	// refreshed is the body of POST /api/queries/<id>/results.
+	// refreshed is the body of POST /api/queries/<id>/results asking for an
+	// execution, and probed the body of the same endpoint asking only for
+	// what is cached. Kept apart so a command that does both does not
+	// overwrite one record with the other.
 	refreshed map[string]any
+	probed    map[string]any
+	// createdViz is the body of POST /api/visualizations, updatedViz that
+	// of POST /api/visualizations/<id>, and deletedViz records that the
+	// DELETE arrived.
+	createdViz map[string]any
+	updatedViz map[string]any
+	deletedViz bool
 	// listed is the query string of every listing request that arrived, in
 	// order, so a test can check both the endpoint and how it was called.
 	listed []*url.URL
@@ -187,9 +209,21 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc(fmt.Sprintf("POST /api/queries/%d/results", savedQueryID),
 		func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
 			f.mu.Lock()
-			if err := json.NewDecoder(r.Body).Decode(&f.refreshed); err != nil {
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode executed query: %v", err)
+			}
+			// The one endpoint answers both an execution (max_age 0) and a
+			// probe for whatever is already cached (a negative max_age),
+			// and only the latter can come back as a result rather than a
+			// job. Branching on the field the real server branches on is
+			// what keeps the two apart.
+			probe := false
+			if maxAge, ok := body["max_age"].(float64); ok && maxAge < 0 {
+				probe, f.probed = true, body
+			} else {
+				f.refreshed = body
 			}
 			f.mu.Unlock()
 			if f.missingParameter {
@@ -199,8 +233,24 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 				}})
 				return
 			}
+			if probe && f.hangProbe {
+				f.park(r)
+				return
+			}
+			if probe && f.cachedColumns != nil {
+				columns := make([]map[string]any, len(f.cachedColumns))
+				for i, name := range f.cachedColumns {
+					columns[i] = map[string]any{"name": name, "friendly_name": name, "type": "string"}
+				}
+				mustJSON(w, map[string]any{"query_result": map[string]any{"data": map[string]any{
+					"columns": columns, "rows": []map[string]any{},
+				}}})
+				return
+			}
 			job := map[string]any{"id": "job-1", "status": 3, "query_result_id": 42}
-			if f.neverDone {
+			if f.neverDone || probe {
+				// A probe that misses the cache leaves the server executing,
+				// which is exactly what the caller has to cancel.
 				job = map[string]any{"id": "job-1", "status": 1}
 			}
 			mustJSON(w, map[string]any{"job": job})
@@ -226,6 +276,43 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 			mustJSON(w, map[string]any{"id": savedQueryID, "is_draft": false})
 		}
 	})
+	mux.HandleFunc("POST /api/visualizations", func(w http.ResponseWriter, r *http.Request) {
+		f.reach(createVizRequest)
+		f.mu.Lock()
+		if err := json.NewDecoder(r.Body).Decode(&f.createdViz); err != nil {
+			t.Errorf("decode created visualization: %v", err)
+		}
+		f.mu.Unlock()
+		if f.hangCreateViz {
+			f.park(r)
+			return
+		}
+		mustJSON(w, map[string]any{"id": savedVizID, "type": f.createdViz["type"], "name": f.createdViz["name"]})
+	})
+	mux.HandleFunc(fmt.Sprintf("POST /api/visualizations/%d", savedVizID),
+		func(w http.ResponseWriter, r *http.Request) {
+			f.mu.Lock()
+			if err := json.NewDecoder(r.Body).Decode(&f.updatedViz); err != nil {
+				t.Errorf("decode updated visualization: %v", err)
+			}
+			f.mu.Unlock()
+			if f.hangUpdateViz {
+				f.park(r)
+				return
+			}
+			mustJSON(w, map[string]any{"id": savedVizID, "type": "CHART", "name": "daily"})
+		})
+	mux.HandleFunc(fmt.Sprintf("DELETE /api/visualizations/%d", savedVizID),
+		func(w http.ResponseWriter, r *http.Request) {
+			f.mu.Lock()
+			f.deletedViz = true
+			f.mu.Unlock()
+			if f.hangDeleteViz {
+				f.park(r)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		})
 	mux.HandleFunc("GET /api/queries", f.handleQueryList)
 	mux.HandleFunc("GET /api/queries/my", f.handleQueryList)
 	mux.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) {

@@ -88,6 +88,7 @@ func newRootCmd() (*cobra.Command, *helpReport) {
 	cmd.AddCommand(
 		newRunCmd(&g),
 		newQueryCmd(&g),
+		newVisualizationCmd(&g),
 		newDataSourceCmd(&g),
 		// auth and profile take no globalFlags: auth login builds its client
 		// from the URL and key it just prompted for, and profile only reads
