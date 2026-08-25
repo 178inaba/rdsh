@@ -201,7 +201,7 @@ func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 			// execution produced are not printed either — create's stdout
 			// is the URL and nothing else, and here it is not even that.
 			return fmt.Errorf("created %s but refreshing it failed, so its page has no result; "+
-				"run `rdsh query refresh %d`: %w", url, q.ID, err)
+				"run %s: %w", url, refreshCommand(q.ID), err)
 		}
 	}
 
@@ -227,8 +227,15 @@ func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 // compose it from the URL.
 func unlinkedResultNotice(id int) string {
 	return fmt.Sprintf("saved with no result on its page, so it opens empty; "+
-		"run `rdsh query refresh %d` to fill it", id)
+		"run %s to fill it", refreshCommand(id))
 }
+
+// refreshCommand spells the one command that puts a result on a query's
+// page. Three messages send a caller to it — this notice, a --refresh that
+// failed, and the chart check that refuses a query with nothing to check
+// against — and an agent consumer reads it out of stderr rather than
+// composing it, so it is written once.
+func refreshCommand(id int) string { return fmt.Sprintf("`rdsh query refresh %d`", id) }
 
 func newQueryUpdateCmd(g *globalFlags) *cobra.Command {
 	var (

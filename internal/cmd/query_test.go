@@ -241,12 +241,8 @@ func TestQueryCreateRefreshTimeoutIsNotATimeout(t *testing.T) {
 // whose refresh failed: that the query exists, where, and what fills it.
 func assertRefreshReport(t *testing.T, err error, srv *httptest.Server) {
 	t.Helper()
-	if url := savedQueryURL(srv); !strings.Contains(err.Error(), url) {
-		t.Errorf("error = %v, want the query URL %s", err, url)
-	}
-	if want := fmt.Sprintf("rdsh query refresh %d", savedQueryID); !strings.Contains(err.Error(), want) {
-		t.Errorf("error = %v, want it to name %q", err, want)
-	}
+	assertReportsTheQuery(t, err, srv)
+	assertRefreshNotice(t, err.Error())
 }
 
 // TestQueryCreateSQLChannels checks that create takes SQL through the same
@@ -383,12 +379,19 @@ func TestQueryCreatePublishTimeoutIsNotATimeout(t *testing.T) {
 // create whose publish failed: that the query exists as a draft, and where.
 func assertUnpublishedReport(t *testing.T, err error, srv *httptest.Server) {
 	t.Helper()
-	url := savedQueryURL(srv)
-	if !strings.Contains(err.Error(), url) {
-		t.Errorf("error = %v, want the query URL %s", err, url)
-	}
+	assertReportsTheQuery(t, err, srv)
 	if !strings.Contains(err.Error(), "draft") {
 		t.Errorf("error = %v, want it to say the query remains a draft", err)
+	}
+}
+
+// assertReportsTheQuery checks the half both create failures share: the
+// query was saved, so its URL has to reach the caller rather than leaving
+// them to re-run a command that would save a second one.
+func assertReportsTheQuery(t *testing.T, err error, srv *httptest.Server) {
+	t.Helper()
+	if url := savedQueryURL(srv); !strings.Contains(err.Error(), url) {
+		t.Errorf("error = %v, want the query URL %s", err, url)
 	}
 }
 
