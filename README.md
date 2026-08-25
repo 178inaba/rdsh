@@ -101,7 +101,7 @@ rdsh query show 42 > signups.sql
 rdsh run -f signups.sql
 ```
 
-`rdsh query show` takes the same ID or URL as `update`. Its `--format` is the one exception to the shared output formats: `json` is the only value it accepts — a multi-line SQL body does not fit a row format — and it prints one object with `id`, `name`, `description`, `data_source_id`, `is_draft`, `url`, and `query`. Without `--format`, the SQL itself is what comes out.
+`rdsh query show` takes the same ID or URL as `update`. Its `--format` is the one exception to the shared output formats: `json` is the only value it accepts — a multi-line SQL body does not fit a row format — and it prints one object with `id`, `name`, `description`, `data_source_id`, `is_draft`, `url`, `query`, and `visualizations` — the charts on the query page, each as `id`, `type` and `name`. That array is the only way to find a visualization's ID, which `rdsh visualization update` and `delete` take. Without `--format`, the SQL itself is what comes out.
 
 Reading the SQL back and running it returns a result of your own; it does not touch the one Redash shows everyone on the query page. That shared result — and any chart drawn from it — only moves when the saved query is executed, which is what `rdsh query refresh` does. It prints the rows in the same formats as `rdsh run` and refreshes the shared result in the same call:
 
@@ -119,6 +119,43 @@ rdsh query refresh 42 --param days=30 --param team=core
 The shared result only advances when the query runs with its own stored defaults, because Redash matches an execution to a query by the hash of the text it ran. Override a default with `--param`, or cover a parameter that has no stored default, and the execution still succeeds and still prints the rows, but the query page keeps showing what it showed before; a line saying so goes to stderr and the command still exits 0. To make the overridden values the ones everyone sees, change the defaults themselves with `rdsh query update --param-default` and refresh again.
 
 Unlike `rdsh run` and `rdsh query create`, `rdsh query update` never reads stdin — SQL is optional there, so falling back to it would turn whatever was piped in into the query. The update also carries the version the query had when it was read, so an edit made in the Redash UI in the meantime fails the command instead of being overwritten; read the query again and re-run.
+
+### Visualizations
+
+A saved query hands someone rows; a visualization on it hands them a chart. It lives on the query page, so the URL already shared keeps working and the chart is simply on it.
+
+```sh
+rdsh query refresh 42
+rdsh visualization create --query 42 --name "Signups by day" --type line --x day --y count
+```
+
+`visualization` is also reachable as `viz`. `--type` takes `line`, `bar`, `area`, `scatter` and `pie` — all five are Redash's one chart type and differ only in how the series is drawn, `bar` being the upright one. `--y` is repeatable, which is how a chart gets several series:
+
+```sh
+rdsh viz create --query 42 --name Signups --type bar --x day --y ios --y android
+```
+
+The `refresh` in the first example is not incidental. Redash stores a visualization's options without validating them, so a chart naming a column the result does not have is accepted with a 200 and renders as a blank chart nobody is told about. `rdsh` therefore checks `--x` and `--y` against the result the query already holds before creating anything, and a mismatch fails the command naming the columns that do exist. That check needs a cached result: on a query with none, nothing is created and the error says to run `rdsh query refresh` first. Creating a chart never executes a query itself — the probe that finds no cached result leaves the server starting one, and `rdsh` cancels it.
+
+On a parametrized query the check runs against the result the effective parameter values map to — the query's stored defaults, overridden by `--param name=value` exactly as on `rdsh query refresh`. Refreshing with the same values first is what makes it a cache hit.
+
+Editing changes only what is passed. The stored options are read first and everything the flags do not name is sent back as it was, so settings chosen in the Redash UI survive. `--query` is required on `update` and `delete` because Redash has no endpoint that reads a visualization by ID — which also means a mistyped ID is refused rather than applied to some other query's chart:
+
+```sh
+rdsh query show 42 --format json          # the visualizations array carries the IDs
+rdsh visualization update 7 --query 42 --type bar
+rdsh visualization delete 7 --query 42
+```
+
+Because `columnMapping` is keyed by column name, passing `--x` alone moves the x column and leaves the y columns alone.
+
+For chart settings and visualization types the typed flags do not reach — counters, tables, anything configured in depth — `--options-file` passes the raw Redash options JSON through and sends `--type` verbatim as the API type. It skips the column check, so the file is taken on trust:
+
+```sh
+rdsh visualization create --query 42 --name Total --type COUNTER --options-file counter.json
+```
+
+Dashboards are out of scope; a visualization belongs to its query.
 
 ### Profiles
 

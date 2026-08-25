@@ -1,6 +1,6 @@
 ---
 name: rdsh
-description: Use rdsh for ad-hoc SQL on Redash and for managing saved Redash queries. Trigger when the user wants to query Redash, run SQL against a Redash data source, fetch data that lives in Redash, or save and share a query on Redash. Do not use for Redash dashboards or for connecting to a database directly.
+description: Use rdsh for ad-hoc SQL on Redash and for managing saved Redash queries and the charts on them. Trigger when the user wants to query Redash, run SQL against a Redash data source, fetch data that lives in Redash, save and share a query on Redash, or put a chart on a saved Redash query. Do not use for Redash dashboards or for connecting to a database directly.
 ---
 
 # rdsh — ad-hoc SQL and saved queries on Redash
@@ -54,7 +54,7 @@ rdsh query show <url> > q.sql
 rdsh run -f q.sql
 ```
 
-That is how a shared query is answered with current data — the saved query's own stored result is never fetched, so what comes back is always fresh. Use `--format json` instead when the metadata is what is needed (name, description, data source, draft state, URL, and the SQL in one object).
+That is how a shared query is answered with current data — the saved query's own stored result is never fetched, so what comes back is always fresh. Use `--format json` instead when the metadata is what is needed (name, description, data source, draft state, URL, the SQL, and the query's visualizations in one object).
 
 ## Refreshing what everyone else sees
 
@@ -65,6 +65,20 @@ That is how a shared query is answered with current data — the saved query's o
 The one thing to check before reporting success: refreshing with parameter values that differ from the ones stored on the query updates nothing on the page. Redash ties an execution to a query by the text it ran, so only a run with the query's own stored defaults advances the shared result. rdsh says so on stderr in that case and still exits 0 — read stderr before telling the user the shared view is current. If they need the overridden values to be what everyone sees, change the defaults themselves with `rdsh query update --param-default` and refresh again — but that changes what every colleague sees on the page, so treat it as an edit to shared state rather than as a way to get one execution to stick.
 
 A parameter that has no stored default cannot be filled in by the server, so a query with one fails unless `--param` covers it; the error names the parameter. That query also has no shared result at all, which is worth saying to the user: giving the parameter a default with `rdsh query update` is what makes the page work for everyone, not just this execution.
+
+## Putting a chart on a query
+
+When the user's goal is that someone *look* at the data — a chart to share, "make this a graph", a query page that should show more than rows — `rdsh visualization create` attaches one to the saved query. It is the same page and the same URL, so nothing new has to be shared.
+
+Refresh the query first. Column names are validated against the query's cached result before anything is created, and on a query with no cached result the command fails and says so rather than creating a chart. That ordering is also how the right columns get picked: refreshing prints the rows, which is what shows which columns exist and which of them are worth plotting. Never guess column names from the SQL — a `SELECT *`, an alias, or a driver's own casing will not match, and the check exists because Redash accepts a wrong name silently and renders nothing.
+
+On a parametrized query, refresh with the same `--param` values the create will use; that is what makes the check a cache hit rather than an error.
+
+The chart types and the raw-JSON escape hatch are in `rdsh visualization create --help`. Reach for the escape hatch only when the typed flags genuinely cannot express what was asked — it skips the validation, so a mistake there is the silent blank chart the typed path exists to prevent.
+
+To change or remove a chart, its ID comes from `rdsh query show --format json`; a URL or a name is not enough. Editing changes only what is passed, so settings a colleague chose in the Redash UI survive an edit made here — prefer editing the existing chart over adding a second one to the same query.
+
+Do not use this for dashboards: a visualization belongs to its query, and rdsh does not manage dashboards or widgets.
 
 ## Timeouts and exit codes
 
