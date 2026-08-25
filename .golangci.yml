@@ -28,3 +28,12 @@ linters:
         - fmt.Fprintln
         - os.Unsetenv
         - (io.ReadCloser).Close
+
+# `golangci-lint run` reports a formatter's findings as ordinary issues, so the
+# existing Lint job and `docker compose run --rm lint` already fail on
+# unformatted code and ci.yml needs no gofmt step of its own. Only gofmt is
+# enabled: goimports, gofumpt and golines each impose a style beyond what
+# `go fmt` itself defines.
+formatters:
+  enable:
+    - gofmt
