@@ -46,11 +46,14 @@ services:
     <<: *redash
     image: redash/redash:26.3.0
     command: server
-    # The container side is fixed: the image's entrypoint hardcodes
-    # `gunicorn -b [::]:5000`. The host side keeps off 5000, which is often
-    # already taken, and stays below the ephemeral range.
+    # Bound to loopback: the admin password and API key are fixed values in
+    # the clear, and Redash reaches whatever host a data source names, so this
+    # should not be answering the LAN. The container side of the mapping is
+    # fixed too — the image's entrypoint hardcodes `gunicorn -b [::]:5000`.
+    # The host side keeps off 5000, which is often already taken, and stays
+    # below the ephemeral range.
     ports:
-      - '15000:5000'
+      - '127.0.0.1:15000:5000'
 
   scheduler:
     <<: *redash
