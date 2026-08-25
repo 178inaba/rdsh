@@ -147,9 +147,15 @@ The column names are checked before anything is created, against the result
 the query page already holds — Redash stores a visualization naming a column
 that does not exist without complaint, and it renders as a blank chart nobody
 is told about. That stored result is read by ID, so this command never
-executes the query and never adds to its cache: a query with no result yet is
-reported as one, and nothing is created until ` + "`rdsh query refresh`" + ` has given
-it one.
+executes the query and never adds to its cache: a query whose page has no result
+linked to it is reported as such, and nothing is created until
+` + "`rdsh query refresh`" + ` has given it one.
+
+Saving a query does not always leave it with a linked result. Depending on the
+Redash version, a query saved by ` + "`rdsh query create`" + ` opens empty even when
+` + "`rdsh run`" + ` produced the same rows just before it, and a chart added to it
+would render nothing for the same reason the page shows nothing. Refreshing
+first is what settles both.
 
 Which parameter values the query was last run with does not matter here. The
 same SQL yields the same columns, so the check reads the same names whatever
@@ -661,7 +667,10 @@ func patchChartOptions(stored map[string]json.RawMessage, seriesType, x string,
 func validateChartColumns(ctx context.Context, client *redash.Client, q *redash.Query,
 	timeout time.Duration, x string, ys []string) error {
 	if q.LatestQueryDataID == 0 {
-		return fmt.Errorf("query %d has no result yet, so the columns cannot be checked; "+
+		// Deliberately not "has never been run": the query may well have
+		// been, and still have nothing linked to its page — which is the
+		// state that matters here, since it is what a chart would draw from.
+		return fmt.Errorf("query %d has no result on its page, so the columns cannot be checked; "+
 			"run `rdsh query refresh %d` first", q.ID, q.ID)
 	}
 	result, err := client.GetQueryResult(ctx, q.LatestQueryDataID)
