@@ -71,7 +71,7 @@ register_data_source() {
 
 wait_for_server() {
 	local deadline=$((SECONDS + 300))
-	until curl -fs -o /dev/null "${redash_url}/ping"; do
+	until curl -fs --max-time 5 -o /dev/null "${redash_url}/ping"; do
 		if ((SECONDS > deadline)); then
 			echo "redash-up.sh: ${redash_url}/ping did not answer within 5 minutes" >&2
 			return 1
