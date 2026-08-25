@@ -514,9 +514,7 @@ func (c *Client) CancelJob(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/api/jobs/"+id, nil, nil)
 }
 
-// queryResultPayload is the shape a result arrives in, whether it was
-// fetched by ID after a job finished or served straight from the cache by a
-// probe. Declared once so the two ways in cannot drift apart.
+// queryResultPayload is the shape a stored result arrives in.
 type queryResultPayload struct {
 	Data struct {
 		Columns []Column         `json:"columns"`
