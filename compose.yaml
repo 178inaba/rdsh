@@ -1,3 +1,33 @@
+# Everything the three Redash services below share. They are a throwaway local
+# Redash for trying rdsh end to end; scripts/redash-up.sh drives them. The
+# `redash` profile keeps them out of every compose invocation that does not
+# name it, so the lint service below is unaffected. Trimmed from
+# https://github.com/getredash/setup/blob/master/data/compose.yaml: no nginx,
+# one worker consuming every queue, and the secrets are fixed values in the
+# clear because this instance is local and disposable.
+#
+# The image tag is deliberately not here: Dependabot's docker-compose ecosystem
+# reads services.<name>.image, so a tag hidden in this extension field may
+# never be bumped. It is repeated on each service instead.
+x-redash: &redash
+  profiles: [redash]
+  # Not `always` or `unless-stopped`: a disposable sandbox should not come back
+  # on its own when Docker restarts. on-failure still recovers the scheduler,
+  # which runs bare — no supervisord — and exits if Redis is not up yet.
+  restart: on-failure
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_started
+  environment: &redash-env
+    PYTHONUNBUFFERED: 0
+    REDASH_LOG_LEVEL: INFO
+    REDASH_REDIS_URL: redis://redis:6379/0
+    REDASH_DATABASE_URL: postgresql://postgres:redash@postgres/postgres
+    REDASH_SECRET_KEY: rdsh-sandbox-secret-key
+    REDASH_COOKIE_SECRET: rdsh-sandbox-cookie-secret
+
 # The image tag below is the single source of truth for the golangci-lint
 # version: CI reads it out of this file, and Dependabot bumps it here. Only
 # the version crosses over — CI installs golangci-lint directly, so flags
@@ -12,6 +42,64 @@ services:
       - lint-cache:/root/.cache
     working_dir: /app
 
+  server:
+    <<: *redash
+    image: redash/redash:26.3.0
+    command: server
+    # Bound to loopback: the admin password and API key are fixed values in
+    # the clear, and Redash reaches whatever host a data source names, so this
+    # should not be answering the LAN. The container side of the mapping is
+    # fixed too — the image's entrypoint hardcodes `gunicorn -b [::]:5000`.
+    # The host side keeps off 5000, which is often already taken, and stays
+    # below the ephemeral range.
+    ports:
+      - '127.0.0.1:15000:5000'
+
+  scheduler:
+    <<: *redash
+    image: redash/redash:26.3.0
+    command: scheduler
+
+  # The official compose splits these queues across three worker services; one
+  # worker consuming all of them is enough here. `queries` has to be in the
+  # list, or `rdsh run` waits out its --timeout and gets nothing.
+  worker:
+    <<: *redash
+    image: redash/redash:26.3.0
+    command: worker
+    environment:
+      <<: *redash-env
+      QUEUES: queries,scheduled_queries,schemas,periodic,emails,default
+      WORKERS_COUNT: 1
+
+  redis:
+    image: redis:7-alpine
+    profiles: [redash]
+
+  # The official compose uses pgautoupgrade; plain postgres is deliberate here
+  # because scripts/redash-up.sh --reset replaces an in-place major upgrade.
+  postgres:
+    image: postgres:17-alpine
+    profiles: [redash]
+    environment:
+      POSTGRES_PASSWORD: redash
+    volumes:
+      - redash-postgres:/var/lib/postgresql/data
+      - ./scripts/redash-seed.sql:/docker-entrypoint-initdb.d/10-redash-seed.sql:ro
+    healthcheck:
+      # -h forces a TCP check: during initdb the temporary server listens on
+      # the unix socket alone, so a socket check would report ready while the
+      # seed script is still running.
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U postgres']
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
 volumes:
   gomod-cache:
   lint-cache:
+  redash-postgres:
+    # Fixed name so that scripts/redash-up.sh --reset can remove exactly this
+    # volume: the generated name carries a project prefix that follows the
+    # name of the directory the repository was cloned into.
+    name: rdsh-redash-postgres

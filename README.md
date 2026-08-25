@@ -178,3 +178,46 @@ docker compose run --rm lint
 # Let golangci-lint apply the fixes it can make itself
 docker compose run --rm lint --fix
 ```
+
+### Redash sandbox
+
+`compose.yaml` also carries a throwaway Redash, behind a `redash` profile so
+that nothing above starts it. One command brings it up — creating the admin
+user, a seeded PostgreSQL database and the data source that reads it — and
+prints the two lines that point rdsh at it:
+
+```sh
+eval "$(scripts/redash-up.sh)"
+rdsh run --data-source sandbox "SELECT count(*) FROM signups"
+```
+
+`RDSH_URL` and `RDSH_API_KEY` are all rdsh needs, so no config file is written
+and `rdsh auth login` never comes into it. A default data source can only come
+from a profile, though, so `--data-source sandbox` has to be passed every time.
+The seed database holds `signups` (a date, a number and two text columns) and
+`events` (a timestamp and a decimal amount), so a parametrized query has
+something of every type to filter on.
+
+Running the script again against a ready stack changes nothing and prints the
+same two lines. The UI at http://localhost:15000 takes `admin@example.com` with
+the password `sandbox`.
+
+Tearing the sandbox down leaves the lint caches above alone:
+
+```sh
+docker compose --profile redash down
+docker volume rm rdsh-redash-postgres
+```
+
+Trying another Redash release means editing the `redash/redash` tag in
+compose.yaml and re-running with `--reset`, which is that same removal followed
+by a fresh start:
+
+```sh
+scripts/redash-up.sh --reset
+```
+
+Redash's migrations are forward-only, so an older image cannot start on a
+volume a newer one initialised — hence the reset rather than a downgrade in
+place. A PostgreSQL major bump needs it too, since the data directory is not
+upgraded for you.
