@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -512,10 +513,12 @@ is how a query someone shared is run for a fresh result of its own.
 
 --format json prints one object carrying the query's metadata alongside the
 SQL: id, name, description, data_source_id, is_draft, url, query, and
-visualizations — the charts on the query page, as id, type and name. That
-array is the only way to find a visualization's ID, which is what
-` + "`rdsh visualization update`" + ` and ` + "`delete`" + ` take. json is the only value --format
-takes here — a multi-line SQL body does not fit a row format.`,
+visualizations — the charts on the query page, as id, type, name and their
+stored options. That array is the only way to reach a visualization at all:
+Redash has no endpoint that reads one by ID, so it is where both the ID that
+` + "`rdsh visualization update`" + ` and ` + "`delete`" + ` take and the options an
+` + "`--options-file`" + ` edit has to start from come from. json is the only value
+--format takes here — a multi-line SQL body does not fit a row format.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runQueryShow(cmd, args, g, outputFormat, timeout.Duration())
@@ -569,22 +572,36 @@ func runQueryShow(cmd *cobra.Command, args []string, g *globalFlags, outputForma
 // the trailing newline is a property of the raw stream above, not of the
 // query.
 func writeQueryDetail(w io.Writer, q *redash.Query, url string) error {
-	// queryVisualization is the visualization as this command reports it:
-	// what identifies a chart and nothing more. The options blob is left
-	// out because it is the front end's own schema — undocumented,
-	// unversioned and not something a caller acts on — and `rdsh
-	// visualization update` reads it back for itself rather than from here.
+	// queryVisualization is the visualization as this command reports it.
+	// The options blob is included, and has to be: Redash registers
+	// /api/visualizations/<id> but defines no GET on it, so a query's
+	// visualizations array is the only place the stored options can be read
+	// — and `rdsh visualization update --options-file` replaces the whole
+	// object, so composing one without reading the current keys first drops
+	// every setting the file does not happen to repeat.
+	//
+	// The keys are passed through exactly as they arrived, which is what
+	// makes the round trip lossless for the ones rdsh has no name for.
 	type queryVisualization struct {
-		ID   int    `json:"id"`
-		Type string `json:"type"`
-		Name string `json:"name"`
+		ID      int                        `json:"id"`
+		Type    string                     `json:"type"`
+		Name    string                     `json:"name"`
+		Options map[string]json.RawMessage `json:"options"`
 	}
 	// Empty rather than null for a query with no charts, so a caller can
 	// iterate it without a branch — the same reason the row output prints
 	// [] for no rows.
 	visualizations := make([]queryVisualization, 0, len(q.Visualizations))
 	for _, v := range q.Visualizations {
-		visualizations = append(visualizations, queryVisualization{ID: v.ID, Type: v.Type, Name: v.Name})
+		// An empty object rather than null for a visualization stored
+		// without options, so the value is always one --options-file can
+		// start from.
+		options := v.Options
+		if options == nil {
+			options = map[string]json.RawMessage{}
+		}
+		visualizations = append(visualizations,
+			queryVisualization{ID: v.ID, Type: v.Type, Name: v.Name, Options: options})
 	}
 
 	return format.WriteObject(w, struct {

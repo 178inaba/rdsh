@@ -983,11 +983,59 @@ func TestQueryShowJSONListsVisualizations(t *testing.T) {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
 	}
 	want := []map[string]any{
-		{"id": float64(9), "type": "CHART", "name": "daily"},
-		{"id": float64(10), "type": "COUNTER", "name": "total"},
+		{
+			"id": float64(9), "type": "CHART", "name": "daily",
+			// The stored options come back as they are stored. An edit
+			// through --options-file replaces the whole object, so composing
+			// one means reading the current keys first — and this is the only
+			// place to read them: Redash registers /api/visualizations/<id>
+			// but defines no GET on it.
+			"options": map[string]any{"globalSeriesType": "line"},
+		},
+		{"id": float64(10), "type": "COUNTER", "name": "total", "options": map[string]any{}},
 	}
 	if !reflect.DeepEqual(got.Visualizations, want) {
 		t.Errorf("visualizations = %v, want %v", got.Visualizations, want)
+	}
+}
+
+// TestQueryShowJSONVisualizationOptionsRoundTrip pins that what comes out
+// can go back in unchanged. `rdsh visualization update --options-file`
+// replaces the options object wholesale, so anything this printing drops or
+// rewrites — a key rdsh has no name for, the text a number was written with
+// — is silently lost from the chart on the next edit.
+func TestQueryShowJSONVisualizationOptionsRoundTrip(t *testing.T) {
+	stored := map[string]any{
+		"globalSeriesType": "column",
+		"columnMapping":    map[string]any{"day": "x", "count": "y"},
+		"series":           map[string]any{"stacking": "stack"},
+		"legend":           map[string]any{"enabled": false, "placement": "auto"},
+		"textFormat":       "",
+	}
+	f := &fakeServer{savedQueryVisualizations: []map[string]any{
+		{"id": 9, "type": "CHART", "name": "daily", "options": stored},
+	}}
+	srv := f.start(t)
+
+	out, err := runRdsh(t, srv, "", "query", "show", "7", "--format", "json")
+	if err != nil {
+		t.Fatalf("query show error = %v", err)
+	}
+
+	var got struct {
+		Visualizations []struct {
+			Options map[string]any `json:"options"`
+		} `json:"visualizations"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out)
+	}
+	if len(got.Visualizations) != 1 {
+		t.Fatalf("len(visualizations) = %d, want 1", len(got.Visualizations))
+	}
+	if !reflect.DeepEqual(got.Visualizations[0].Options, stored) {
+		t.Errorf("options = %#v, want every stored key back as it was: %#v",
+			got.Visualizations[0].Options, stored)
 	}
 }
 

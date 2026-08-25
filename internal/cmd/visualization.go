@@ -127,7 +127,24 @@ the chart rather than raw rows. The query is named by its ID or by its URL on
 the configured Redash instance.
 
 --type takes ` + strings.Join(chartTypeNames, ", ") + `. All five are the one Redash chart
-type and differ only in how the series is drawn; bar is the upright one.
+type and differ only in one stored setting, globalSeriesType; bar is the
+upright one.
+
+Everything else about the chart is left to Redash's own defaults, which is
+what keeps a chart rdsh made looking like one the UI made. Three of those
+defaults are worth knowing before picking a type, because the word for the
+type does not imply them:
+
+  area is not stacked. Two series are drawn over each other translucently,
+  and the y axis tops out at the larger series rather than at the sum.
+
+  pie is ordered by share, not by the row order of the result.
+
+  the x axis type is auto-detected, so a column of date-like strings such as
+  2026-01 becomes a date axis rather than evenly spaced categories.
+
+Each of those is reachable through --options-file (series.stacking, piesort,
+xAxis.type), which is also where every other chart setting lives.
 
 --x names the column along the x axis and --y the column plotted against it.
 --y is repeatable, which is how a chart gets several series.

@@ -54,7 +54,7 @@ rdsh query show <url> > q.sql
 rdsh run -f q.sql
 ```
 
-That is how a shared query is answered with current data — the saved query's own stored result is never fetched, so what comes back is always fresh. Use `--format json` instead when the metadata is what is needed (name, description, data source, draft state, URL, the SQL, and the query's visualizations in one object).
+That is how a shared query is answered with current data — the saved query's own stored result is never fetched, so what comes back is always fresh. Use `--format json` instead when the metadata is what is needed (name, description, data source, draft state, URL, the SQL, and the query's visualizations with their stored options, in one object).
 
 ## Refreshing what everyone else sees
 
@@ -76,7 +76,9 @@ On a parametrized query, refresh with the same `--param` values the create will 
 
 The chart types and the raw-JSON escape hatch are in `rdsh visualization create --help`. Reach for the escape hatch only when the typed flags genuinely cannot express what was asked — it skips the validation, so a mistake there is the silent blank chart the typed path exists to prevent.
 
-To change or remove a chart, its ID comes from `rdsh query show --format json`; a URL or a name is not enough. Editing changes only what is passed, so settings a colleague chose in the Redash UI survive an edit made here — prefer editing the existing chart over adding a second one to the same query.
+`--type` sets one thing; every other chart setting keeps Redash's default. Do not infer the rest from the type's name when reporting to the user: `area` is **not** stacked, `pie` is ordered by share rather than by result order, and a date-like text column becomes a date axis rather than evenly spaced categories. Saying "stacked" of an `area` chart is wrong, and the user will see that it is. When a specific look is actually required, `--options-file` is what reaches it.
+
+To change or remove a chart, its ID comes from `rdsh query show --format json`; a URL or a name is not enough. The same entry carries the chart's stored options, and reading them is not optional before an `--options-file` edit: that flag replaces the options object rather than merging into it, so any key not repeated in the file is dropped from the chart — including settings a colleague chose in the Redash UI. Editing changes only what is passed, so settings a colleague chose in the Redash UI survive an edit made here — prefer editing the existing chart over adding a second one to the same query.
 
 Do not use this for dashboards: a visualization belongs to its query, and rdsh does not manage dashboards or widgets.
 

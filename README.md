@@ -101,7 +101,7 @@ rdsh query show 42 > signups.sql
 rdsh run -f signups.sql
 ```
 
-`rdsh query show` takes the same ID or URL as `update`. Its `--format` is the one exception to the shared output formats: `json` is the only value it accepts — a multi-line SQL body does not fit a row format — and it prints one object with `id`, `name`, `description`, `data_source_id`, `is_draft`, `url`, `query`, and `visualizations` — the charts on the query page, each as `id`, `type` and `name`. That array is the only way to find a visualization's ID, which `rdsh visualization update` and `delete` take. Without `--format`, the SQL itself is what comes out.
+`rdsh query show` takes the same ID or URL as `update`. Its `--format` is the one exception to the shared output formats: `json` is the only value it accepts — a multi-line SQL body does not fit a row format — and it prints one object with `id`, `name`, `description`, `data_source_id`, `is_draft`, `url`, `query`, and `visualizations` — the charts on the query page, each as `id`, `type`, `name` and its stored `options`. That array is the only way to find a visualization's ID, which `rdsh visualization update` and `delete` take. Without `--format`, the SQL itself is what comes out.
 
 Reading the SQL back and running it returns a result of your own; it does not touch the one Redash shows everyone on the query page. That shared result — and any chart drawn from it — only moves when the saved query is executed, which is what `rdsh query refresh` does. It prints the rows in the same formats as `rdsh run` and refreshes the shared result in the same call:
 
@@ -135,6 +135,14 @@ rdsh visualization create --query 42 --name "Signups by day" --type line --x day
 rdsh viz create --query 42 --name Signups --type bar --x day --y ios --y android
 ```
 
+Only that one setting is written. Everything else about the chart is left to Redash's own defaults, which is what keeps an rdsh-made chart looking like a UI-made one — but three of those defaults are not implied by the type's name:
+
+- **`area` is not stacked.** Series are drawn over each other translucently, and the y axis tops out at the largest series rather than at the sum.
+- **`pie` is ordered by share**, not by the row order of the result.
+- **the x axis type is auto-detected**, so a column of date-like strings such as `2026-01` becomes a date axis rather than evenly spaced categories.
+
+Each is reachable through `--options-file` (`series.stacking`, `piesort`, `xAxis.type`), as is every other chart setting.
+
 The `refresh` in the first example is not incidental. Redash stores a visualization's options without validating them, so a chart naming a column the result does not have is accepted with a 200 and renders as a blank chart nobody is told about. `rdsh` therefore checks `--x` and `--y` against the result the query already holds before creating anything, and a mismatch fails the command naming the columns that do exist. That check needs a cached result: on a query with none, nothing is created and the error says to run `rdsh query refresh` first. Creating a chart never executes a query itself — the probe that finds no cached result leaves the server starting one, and `rdsh` cancels it.
 
 On a parametrized query the check runs against the result the effective parameter values map to — the query's stored defaults, overridden by `--param name=value` exactly as on `rdsh query refresh`. Refreshing with the same values first is what makes it a cache hit.
@@ -146,6 +154,8 @@ rdsh query show 42 --format json          # the visualizations array carries the
 rdsh visualization update 7 --query 42 --type bar
 rdsh visualization delete 7 --query 42
 ```
+
+That array carries each chart's stored `options` as well as its ID, and it is the only place to read them — Redash has no endpoint that returns a single visualization. Since `--options-file` replaces the options object rather than merging into it, an edit that means to change one key should start from what `query show` reports, or the keys it does not repeat are dropped from the chart.
 
 Because `columnMapping` is keyed by column name, passing `--x` alone moves the x column and leaves the y columns alone — and a column can hold only one role, so moving one axis onto the column the other holds is refused rather than silently dropping that other axis. Swapping them means naming both in the same call:
 
