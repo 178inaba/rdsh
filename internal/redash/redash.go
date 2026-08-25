@@ -544,9 +544,12 @@ func (c *Client) GetQueryResult(ctx context.Context, resultID int) (*QueryResult
 // whatever the request body says, so publishing it is a second call to
 // UpdateQuery rather than a field set here.
 //
-// Redash attaches the latest result of a matching query text and data
-// source to the new query as it is created, which is what lets a run
-// followed by a create share results without executing them twice.
+// Redash 26.3.0 and later attach the latest result of a matching query text
+// and data source to the new query as it is created, which is what lets a
+// run followed by a create share results without executing them twice.
+// Older versions link a result only when the saved query is executed, so
+// the returned query's LatestQueryDataID is what says whether it happened —
+// the link is committed before the response is serialized.
 func (c *Client) CreateQuery(ctx context.Context, q NewQuery) (*Query, error) {
 	var created Query
 	if err := c.do(ctx, http.MethodPost, "/api/queries", q, &created); err != nil {
