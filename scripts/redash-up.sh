@@ -10,7 +10,9 @@
 set -euo pipefail
 
 # The fixed values of this sandbox. Nothing outside this script and the
-# README's Development section needs to know them.
+# README's Development section needs to know them, except the data source
+# name: the e2e suite passes it to the commands that take --data-source,
+# since the environment pair below leaves no profile to carry a default.
 readonly redash_url='http://localhost:15000'
 readonly api_key='rdsh-sandbox-api-key' # users.api_key is a String(40)
 readonly admin_email='admin@example.com'
