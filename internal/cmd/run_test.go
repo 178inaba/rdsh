@@ -72,6 +72,10 @@ type fakeServer struct {
 	// tests that need the keys beside the parameters. It wins over
 	// savedQueryParameters when both are set.
 	savedQueryOptions map[string]any
+	// savedQueryVisualizations is what GET /api/queries/<id> serves as its
+	// visualizations array; nil leaves the key out, which is what a query
+	// with no charts on it reads back as.
+	savedQueryVisualizations []map[string]any
 	// missingParameter makes the execution endpoint refuse the way Redash
 	// refuses a placeholder it was given no value for: a failed job rather
 	// than a message, and an HTTP 400.
@@ -175,6 +179,9 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 			query["options"] = f.savedQueryOptions
 		case f.savedQueryParameters != nil:
 			query["options"] = map[string]any{"parameters": f.savedQueryParameters}
+		}
+		if f.savedQueryVisualizations != nil {
+			query["visualizations"] = f.savedQueryVisualizations
 		}
 		mustJSON(w, query)
 	})

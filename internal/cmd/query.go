@@ -511,8 +511,11 @@ instance. What is printed is the query's own SQL and nothing else, so
 is how a query someone shared is run for a fresh result of its own.
 
 --format json prints one object carrying the query's metadata alongside the
-SQL: id, name, description, data_source_id, is_draft, url and query. json is
-the only value it takes — a multi-line SQL body does not fit a row format.`,
+SQL: id, name, description, data_source_id, is_draft, url, query, and
+visualizations — the charts on the query page, as id, type and name. That
+array is the only way to find a visualization's ID, which is what
+` + "`rdsh visualization update`" + ` and ` + "`delete`" + ` take. json is the only value --format
+takes here — a multi-line SQL body does not fit a row format.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runQueryShow(cmd, args, g, outputFormat, timeout.Duration())
@@ -566,22 +569,42 @@ func runQueryShow(cmd *cobra.Command, args []string, g *globalFlags, outputForma
 // the trailing newline is a property of the raw stream above, not of the
 // query.
 func writeQueryDetail(w io.Writer, q *redash.Query, url string) error {
+	// queryVisualization is the visualization as this command reports it:
+	// what identifies a chart and nothing more. The options blob is left
+	// out because it is the front end's own schema — undocumented,
+	// unversioned and not something a caller acts on — and `rdsh
+	// visualization update` reads it back for itself rather than from here.
+	type queryVisualization struct {
+		ID   int    `json:"id"`
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	// Empty rather than null for a query with no charts, so a caller can
+	// iterate it without a branch — the same reason the row output prints
+	// [] for no rows.
+	visualizations := make([]queryVisualization, 0, len(q.Visualizations))
+	for _, v := range q.Visualizations {
+		visualizations = append(visualizations, queryVisualization{ID: v.ID, Type: v.Type, Name: v.Name})
+	}
+
 	return format.WriteObject(w, struct {
-		ID           int    `json:"id"`
-		Name         string `json:"name"`
-		Description  string `json:"description"`
-		DataSourceID int    `json:"data_source_id"`
-		IsDraft      bool   `json:"is_draft"`
-		URL          string `json:"url"`
-		Query        string `json:"query"`
+		ID             int                  `json:"id"`
+		Name           string               `json:"name"`
+		Description    string               `json:"description"`
+		DataSourceID   int                  `json:"data_source_id"`
+		IsDraft        bool                 `json:"is_draft"`
+		URL            string               `json:"url"`
+		Query          string               `json:"query"`
+		Visualizations []queryVisualization `json:"visualizations"`
 	}{
-		ID:           q.ID,
-		Name:         q.Name,
-		Description:  q.Description,
-		DataSourceID: q.DataSourceID,
-		IsDraft:      q.IsDraft,
-		URL:          url,
-		Query:        q.Query,
+		ID:             q.ID,
+		Name:           q.Name,
+		Description:    q.Description,
+		DataSourceID:   q.DataSourceID,
+		IsDraft:        q.IsDraft,
+		URL:            url,
+		Query:          q.Query,
+		Visualizations: visualizations,
 	})
 }
 
