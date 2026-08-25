@@ -32,6 +32,7 @@ func newQueryCreateCmd(g *globalFlags) *cobra.Command {
 		file        string
 		dataSource  string
 		draft       bool
+		refresh     bool
 		params      paramFlagValues
 		timeout     timeoutFlag
 	)
@@ -49,6 +50,15 @@ which fills the page at no further cost; older versions link a result only
 when the saved query is executed. Nothing here reads the server's version:
 when the query comes back with no result on its page, a line saying so and
 naming ` + "`rdsh query refresh`" + ` goes to stderr, and the command still exits 0.
+
+--refresh fills the page on every version instead, by executing the saved
+query once after saving it. That costs one execution whatever the server
+does with the link, so it suits saving SQL that has not been run yet;
+saving SQL ` + "`rdsh run`" + ` has just run is the other way round, and pays for a
+second execution only when the notice says the link was not made. A refresh
+that fails exits 1 rather than 124, even when --timeout is what stopped it:
+the query is saved by then, so re-running the command would save a second
+one, and its URL goes to stderr instead.
 
 The query is published unless --draft is given.
 
@@ -69,7 +79,8 @@ that is not among them is refused. Range, enum and dropdown-query parameters
 are the Redash UI's to define.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQueryCreate(cmd, args, g, name, description, file, dataSource, draft, params, timeout.Duration())
+			return runQueryCreate(cmd, args, g, name, description, file, dataSource,
+				draft, refresh, params, timeout.Duration())
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "name of the saved query (required)")
@@ -77,6 +88,9 @@ are the Redash UI's to define.`,
 	cmd.Flags().StringVarP(&file, "file", "f", "", "read SQL from a file")
 	cmd.Flags().StringVar(&dataSource, "data-source", "", "data source ID or name (default: the profile's data source)")
 	cmd.Flags().BoolVar(&draft, "draft", false, "leave the query a draft instead of publishing it")
+	cmd.Flags().BoolVar(&refresh, "refresh", false,
+		"execute the query once after saving it, so its page opens with a result "+
+			"(--timeout bounds that execution too)")
 	addParamDefinitionFlags(cmd, &params)
 	addTimeoutFlag(cmd, &timeout, serverTimeoutUsage)
 	return cmd
@@ -95,7 +109,7 @@ func addParamDefinitionFlags(cmd *cobra.Command, params *paramFlagValues) {
 }
 
 func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, description, file, dataSource string,
-	draft bool, params paramFlagValues, timeout time.Duration) error {
+	draft, refresh bool, params paramFlagValues, timeout time.Duration) error {
 	// Checked before anything that talks to the server, so a bad invocation
 	// cannot leave a query behind. --timeout needs no check of its own:
 	// timeoutFlag refuses a negative duration as the flags are parsed.
@@ -172,11 +186,31 @@ func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 		}
 	}
 
+	if refresh {
+		// Last, so the execution meets the query in the state it will be
+		// left in. The values are the defaults the create just saved:
+		// Redash substitutes only what the request carries, and a
+		// placeholder left unfilled fails the execution — which is why
+		// create requires every parameter it defines to have one.
+		values, _ := mergeParameters(definitions, nil)
+		if _, err := client.RefreshQuery(ctx, q.ID, values); err != nil {
+			// Not reported as a timeout even when the deadline is what
+			// stopped it, for the reason the publish step is not: the
+			// query is saved, and 124 tells an agent to re-run the command
+			// as it stands, which would save a second one. The rows the
+			// execution produced are not printed either — create's stdout
+			// is the URL and nothing else, and here it is not even that.
+			return fmt.Errorf("created %s but refreshing it failed, so its page has no result; "+
+				"run `rdsh query refresh %d`: %w", url, q.ID, err)
+		}
+	}
+
 	fmt.Fprintln(cmd.OutOrStdout(), url)
 	// Read from the create's own response rather than by asking again: a
 	// version that links a result as the query is saved commits that link
 	// before the response is serialized, so what came back already says.
-	if q.LatestQueryDataID == 0 {
+	// A --refresh has just linked one, whatever the response said.
+	if !refresh && q.LatestQueryDataID == 0 {
 		fmt.Fprintln(cmd.ErrOrStderr(), unlinkedResultNotice(q.ID))
 	}
 	return nil

@@ -126,6 +126,129 @@ func assertRefreshNotice(t *testing.T, errOut string) {
 	}
 }
 
+// TestQueryCreateRefreshFillsThePage covers the flag that makes the page
+// open with data whatever the server does with the link: the saved query is
+// executed once, so there is nothing left to report on stderr. The rows the
+// execution produced stay unprinted — create's stdout is the URL alone.
+func TestQueryCreateRefreshFillsThePage(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	out, errOut, err := runRdshSplit(t, srv, "query", "create", "--name", "signups", "SELECT 1",
+		"--data-source", "5", "--refresh")
+	if err != nil {
+		t.Fatalf("query create --refresh error = %v", err)
+	}
+	if want := savedQueryURL(srv) + "\n"; out != want {
+		t.Errorf("stdout = %q, want %q and nothing else", out, want)
+	}
+	assertNoNote(t, errOut)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.refreshed == nil {
+		t.Error("the query was never executed, want --refresh to execute it")
+	}
+	if f.updated == nil {
+		t.Error("no publish request arrived, want the refresh to follow one")
+	}
+}
+
+// TestQueryCreateRefreshSendsTheStoredDefaults pins what the execution runs
+// with: Redash fails an execution that leaves a placeholder unfilled, and
+// the defaults the create just saved are the values the query page itself
+// would use.
+func TestQueryCreateRefreshSendsTheStoredDefaults(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	_, _, err := runRdshSplit(t, srv, "query", "create", "--name", "signups", "SELECT {{days}}",
+		"--data-source", "5", "--param-default", "days=7", "--refresh")
+	if err != nil {
+		t.Fatalf("query create --refresh error = %v", err)
+	}
+	assertRefreshedWith(t, f, map[string]any{"days": "7"})
+}
+
+// TestQueryCreateDraftRefresh covers the combination a query saved to be
+// referenced as query_<id> needs: nothing is published, and the page is
+// filled all the same.
+func TestQueryCreateDraftRefresh(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	_, errOut, err := runRdshSplit(t, srv, "query", "create", "--name", "part", "--draft", "SELECT 1",
+		"--data-source", "5", "--refresh")
+	if err != nil {
+		t.Fatalf("query create --draft --refresh error = %v", err)
+	}
+	assertNoNote(t, errOut)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.updated != nil {
+		t.Errorf("publish body = %v, want no publish request at all", f.updated)
+	}
+	if f.refreshed == nil {
+		t.Error("the query was never executed, want --refresh to execute it")
+	}
+}
+
+// TestQueryCreateRefreshFailureReportsTheQuery covers the second case that
+// exits 1 rather than 124: the query is saved by the time the refresh runs,
+// so the URL and the command that fills the page have to reach the caller,
+// and stdout must stay empty so nothing reads as a finished create.
+func TestQueryCreateRefreshFailureReportsTheQuery(t *testing.T) {
+	f := &fakeServer{missingParameter: true}
+	srv := f.start(t)
+
+	out, _, err := runRdshSplit(t, srv, "query", "create", "--name", "signups", "SELECT 1",
+		"--data-source", "5", "--refresh")
+	if err == nil {
+		t.Fatalf("output = %q, want a reported failure", out)
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want nothing", out)
+	}
+	if errors.Is(err, errTimeout) {
+		t.Errorf("error = %v, want an ordinary failure rather than a timeout", err)
+	}
+	assertRefreshReport(t, err, srv)
+}
+
+// TestQueryCreateRefreshTimeoutIsNotATimeout pins the same exception for a
+// refresh the --timeout cut off, the way the publish step is pinned: 124
+// would tell an agent to re-run as is, and re-running create saves the query
+// twice.
+func TestQueryCreateRefreshTimeoutIsNotATimeout(t *testing.T) {
+	f := &fakeServer{neverDone: true}
+	srv := f.start(t)
+
+	// Everything before the execution answers at once, so only the job that
+	// never finishes can reach the deadline.
+	out, _, err := runRdshSplit(t, srv, "query", "create", "--name", "signups", "SELECT 1",
+		"--data-source", "5", "--refresh", "--timeout", "50ms")
+	if err == nil {
+		t.Fatalf("output = %q, want a reported failure", out)
+	}
+	if errors.Is(err, errTimeout) {
+		t.Errorf("error = %v, want exit 1 rather than the timeout code", err)
+	}
+	assertRefreshReport(t, err, srv)
+}
+
+// assertRefreshReport checks what a caller needs to recover from a create
+// whose refresh failed: that the query exists, where, and what fills it.
+func assertRefreshReport(t *testing.T, err error, srv *httptest.Server) {
+	t.Helper()
+	if url := savedQueryURL(srv); !strings.Contains(err.Error(), url) {
+		t.Errorf("error = %v, want the query URL %s", err, url)
+	}
+	if want := fmt.Sprintf("rdsh query refresh %d", savedQueryID); !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %v, want it to name %q", err, want)
+	}
+}
+
 // TestQueryCreateSQLChannels checks that create takes SQL through the same
 // three channels as run, with the same conflict rule.
 func TestQueryCreateSQLChannels(t *testing.T) {
