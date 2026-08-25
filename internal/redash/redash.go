@@ -433,12 +433,33 @@ func (c *Client) abandonJob(ctx context.Context, jobID string) error {
 	if jobID == "" {
 		return ctxErr
 	}
-	cancelCtx, cancel := context.WithTimeout(context.Background(), cancelTimeout)
-	defer cancel()
-	if err := c.CancelJob(cancelCtx, jobID); err != nil {
+	if err := c.cancelDetached(jobID); err != nil {
 		return errors.Join(ctxErr, fmt.Errorf("additionally, cancelling job %s failed: %w", jobID, err))
 	}
 	return ctxErr
+}
+
+// cancelDetached cancels the job on a fresh short-lived context of its own,
+// because the caller's is typically the very thing that expired. The two
+// callers differ only in what they do with the failure: abandonJob reports
+// it alongside the expiry, CancelJobBestEffort discards it.
+func (c *Client) cancelDetached(jobID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), cancelTimeout)
+	defer cancel()
+	return c.CancelJob(ctx, jobID)
+}
+
+// CancelJobBestEffort stops a job the caller started but does not want,
+// reporting nothing. It is for the caller that already has something more
+// useful to say than a cancellation failure — the cached-result probe,
+// which tells its caller to refresh the query, and would only bury that
+// under an error about a job the caller never asked to start. An empty ID
+// is a job that never got far enough to have one.
+func (c *Client) CancelJobBestEffort(jobID string) {
+	if jobID == "" {
+		return
+	}
+	_ = c.cancelDetached(jobID)
 }
 
 func (c *Client) submitQuery(ctx context.Context, query string, dataSourceID int) (*Job, error) {
@@ -522,20 +543,15 @@ func (c *Client) submitSavedQuery(ctx context.Context, id int, parameters map[st
 // uncovered fails on the server rather than here.
 func (c *Client) CachedQueryResult(ctx context.Context, id int, parameters map[string]any) (*QueryResult, *Job, error) {
 	var resp struct {
-		QueryResult *struct {
-			Data struct {
-				Columns []Column         `json:"columns"`
-				Rows    []map[string]any `json:"rows"`
-			} `json:"data"`
-		} `json:"query_result"`
-		Job *Job `json:"job"`
+		QueryResult *queryResultPayload `json:"query_result"`
+		Job         *Job                `json:"job"`
 	}
 	body := savedQueryResultsBody(parameters, maxAgeAnyCache)
 	if err := c.do(ctx, http.MethodPost, savedQueryResultsPath(id), body, &resp); err != nil {
 		return nil, nil, err
 	}
 	if resp.QueryResult != nil {
-		return &QueryResult{Columns: resp.QueryResult.Data.Columns, Rows: resp.QueryResult.Data.Rows}, nil, nil
+		return resp.QueryResult.result(), nil, nil
 	}
 	if resp.Job == nil {
 		return nil, nil, errors.New("server returned neither a cached result nor a job")
@@ -561,19 +577,28 @@ func (c *Client) CancelJob(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/api/jobs/"+id, nil, nil)
 }
 
+// queryResultPayload is the shape a result arrives in, whether it was
+// fetched by ID after a job finished or served straight from the cache by a
+// probe. Declared once so the two ways in cannot drift apart.
+type queryResultPayload struct {
+	Data struct {
+		Columns []Column         `json:"columns"`
+		Rows    []map[string]any `json:"rows"`
+	} `json:"data"`
+}
+
+func (p *queryResultPayload) result() *QueryResult {
+	return &QueryResult{Columns: p.Data.Columns, Rows: p.Data.Rows}
+}
+
 func (c *Client) getQueryResult(ctx context.Context, resultID int) (*QueryResult, error) {
 	var resp struct {
-		QueryResult struct {
-			Data struct {
-				Columns []Column         `json:"columns"`
-				Rows    []map[string]any `json:"rows"`
-			} `json:"data"`
-		} `json:"query_result"`
+		QueryResult queryResultPayload `json:"query_result"`
 	}
 	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/api/query_results/%d", resultID), nil, &resp); err != nil {
 		return nil, err
 	}
-	return &QueryResult{Columns: resp.QueryResult.Data.Columns, Rows: resp.QueryResult.Data.Rows}, nil
+	return resp.QueryResult.result(), nil
 }
 
 // CreateQuery saves a new query. Redash forces the new query to be a draft

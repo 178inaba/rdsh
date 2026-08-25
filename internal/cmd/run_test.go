@@ -95,6 +95,7 @@ type fakeServer struct {
 	cancelled        bool
 	submitted        bool
 	fetched          bool           // GET /api/queries/<id> arrived
+	fetchCount       int            // how many times it arrived
 	listedSources    bool           // GET /api/data_sources arrived
 	created          map[string]any // body of POST /api/queries
 	// refreshed is the body of POST /api/queries/<id>/results asking for an
@@ -183,6 +184,7 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 		f.reach(getQueryRequest)
 		f.mu.Lock()
 		f.fetched = true
+		f.fetchCount++
 		f.mu.Unlock()
 		if f.hangGet {
 			f.park(r)

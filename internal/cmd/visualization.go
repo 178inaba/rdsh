@@ -31,25 +31,36 @@ const (
 	columnRoleY         = "y"
 )
 
-// chartTypeNames is the --type values a typed chart takes, in the order the
-// help and the errors list them.
-var chartTypeNames = []string{"line", "bar", "area", "scatter", "pie"}
-
-// globalSeriesTypes maps each of those to the value viz-lib renders from.
-// Only bar differs: Redash's "bar" is the horizontal one, and the upright
-// bars everyone means by the word are its "column".
+// chartTypes is the --type values a typed chart takes, in the order the help
+// and the errors list them, each paired with the value viz-lib renders from.
+// Only bar differs from its own name: Redash's "bar" is the horizontal one,
+// and the upright bars everyone means by the word are its "column".
+//
+// One ordered list rather than a list of names beside a lookup, so a type
+// can never be advertised in the help and then refused as unsupported by the
+// message that just listed it.
 //
 // Checked against getredash/redash master on 2026-08-25. The schema is open
 // source but undocumented and unversioned, and the server never validates
 // it, so drift shows up only as a chart that renders wrong — which is why
 // the version this was read at is pinned here rather than left implicit.
-var globalSeriesTypes = map[string]string{
-	"line":    "line",
-	"bar":     "column",
-	"area":    "area",
-	"scatter": "scatter",
-	"pie":     "pie",
+var chartTypes = []struct{ name, seriesType string }{
+	{name: "line", seriesType: "line"},
+	{name: "bar", seriesType: "column"},
+	{name: "area", seriesType: "area"},
+	{name: "scatter", seriesType: "scatter"},
+	{name: "pie", seriesType: "pie"},
 }
+
+// chartTypeNames is that list's names, derived rather than written out
+// again, for the flag help and the error message.
+var chartTypeNames = func() []string {
+	names := make([]string, len(chartTypes))
+	for i, t := range chartTypes {
+		names[i] = t.name
+	}
+	return names
+}()
 
 func newVisualizationCmd(g *globalFlags) *cobra.Command {
 	cmd := &cobra.Command{
@@ -200,7 +211,14 @@ func runVisualizationCreate(cmd *cobra.Command, g *globalFlags, f *visualization
 
 	options, apiType := rawOptions, f.chartType
 	if !f.rawMode() {
-		if err := validateChartColumns(ctx, client, queryID, overrides, timeout, f.x, f.y); err != nil {
+		// Read for the stored parameter defaults, which decide which cached
+		// result the column check is run against.
+		q, err := client.GetQuery(ctx, queryID)
+		if err != nil {
+			return timeoutOr(err, timeout, "the query")
+		}
+		if err := validateChartColumns(ctx, client, queryID, q.Options.Parameters,
+			overrides, timeout, f.x, f.y); err != nil {
 			return err
 		}
 		options, apiType = chartOptions(seriesType, f.x, f.y), visualizationTypeChart
@@ -301,7 +319,7 @@ func runVisualizationUpdate(cmd *cobra.Command, args []string, g *globalFlags, f
 	ctx, cancel := withTimeout(cmd.Context(), timeout)
 	defer cancel()
 
-	viz, err := findVisualization(ctx, client, queryID, vizID, timeout)
+	q, viz, err := findVisualization(ctx, client, queryID, vizID, timeout)
 	if err != nil {
 		return err
 	}
@@ -328,7 +346,8 @@ func runVisualizationUpdate(cmd *cobra.Command, args []string, g *globalFlags, f
 				"edit it with --options-file instead", vizID, viz.Type, visualizationTypeChart)
 		}
 		if f.x != "" || len(f.y) > 0 {
-			if err := validateChartColumns(ctx, client, queryID, overrides, timeout, f.x, f.y); err != nil {
+			if err := validateChartColumns(ctx, client, queryID, q.Options.Parameters,
+				overrides, timeout, f.x, f.y); err != nil {
 				return err
 			}
 		}
@@ -400,7 +419,7 @@ func runVisualizationDelete(cmd *cobra.Command, args []string, g *globalFlags, q
 	ctx, cancel := withTimeout(cmd.Context(), timeout)
 	defer cancel()
 
-	if _, err := findVisualization(ctx, client, queryID, vizID, timeout); err != nil {
+	if _, _, err := findVisualization(ctx, client, queryID, vizID, timeout); err != nil {
 		return err
 	}
 	// Re-running after an expiry is safe: the visualization is either still
@@ -418,15 +437,18 @@ func runVisualizationDelete(cmd *cobra.Command, args []string, g *globalFlags, q
 // under vizID. Redash has no endpoint that reads one by ID, so this is both
 // the only way to reach its stored options and the check that the ID a
 // caller typed belongs to the query they named.
+// It returns the query as well as the visualization, so a caller that goes
+// on to check columns has the stored parameter definitions without reading
+// the same query a second time.
 func findVisualization(ctx context.Context, client *redash.Client, queryID, vizID int,
-	timeout time.Duration) (*redash.Visualization, error) {
+	timeout time.Duration) (*redash.Query, *redash.Visualization, error) {
 	q, err := client.GetQuery(ctx, queryID)
 	if err != nil {
-		return nil, timeoutOr(err, timeout, "the query")
+		return nil, nil, timeoutOr(err, timeout, "the query")
 	}
 	for i, v := range q.Visualizations {
 		if v.ID == vizID {
-			return &q.Visualizations[i], nil
+			return q, &q.Visualizations[i], nil
 		}
 	}
 	ids := make([]string, 0, len(q.Visualizations))
@@ -434,18 +456,20 @@ func findVisualization(ctx context.Context, client *redash.Client, queryID, vizI
 		ids = append(ids, fmt.Sprintf("%d (%s)", v.ID, v.Name))
 	}
 	if len(ids) == 0 {
-		return nil, fmt.Errorf("query %d has no visualization %d, and none at all", queryID, vizID)
+		return nil, nil, fmt.Errorf("query %d has no visualization %d, and none at all", queryID, vizID)
 	}
-	return nil, fmt.Errorf("query %d has no visualization %d; it has %s",
+	return nil, nil, fmt.Errorf("query %d has no visualization %d; it has %s",
 		queryID, vizID, strings.Join(ids, ", "))
 }
 
 // chartSeriesType maps a --type value to what viz-lib renders from, or
-// reports the values that exist. Both halves come from globalSeriesTypes so
-// the accepted set and the message can never name different things.
+// reports the values that exist. A linear scan over five entries, which
+// keeps the accepted set and the order the message lists it in one thing.
 func chartSeriesType(name string) (string, error) {
-	if seriesType, ok := globalSeriesTypes[name]; ok {
-		return seriesType, nil
+	for _, t := range chartTypes {
+		if t.name == name {
+			return t.seriesType, nil
+		}
 	}
 	return "", fmt.Errorf("unsupported chart type %q (supported: %s); "+
 		"for any other Redash visualization type, use --options-file",
@@ -544,15 +568,17 @@ func patchChartOptions(stored map[string]json.RawMessage, seriesType, x string,
 // columns whatever the values are; the values only decide which cached
 // result answers.
 func validateChartColumns(ctx context.Context, client *redash.Client, queryID int,
-	overrides map[string]string, timeout time.Duration, x string, ys []string) error {
-	q, err := client.GetQuery(ctx, queryID)
-	if err != nil {
-		return timeoutOr(err, timeout, "the query")
-	}
+	stored []redash.QueryParameter, overrides map[string]string, timeout time.Duration,
+	x string, ys []string) error {
+	// The query's stored parameter definitions come from the caller, which
+	// has already read it — update reads it to find the visualization, and
+	// create to get here at all — so the check adds one round trip, the
+	// probe, rather than two.
+	//
 	// The same merge `query refresh` applies: the stored defaults, with
 	// --param on top. A parameter neither covers is reported by the server
 	// from the probe, naming itself, exactly as it is there.
-	values, _ := mergeParameters(q.Options.Parameters, overrides)
+	values, _ := mergeParameters(stored, overrides)
 
 	result, job, err := client.CachedQueryResult(ctx, queryID, values)
 	if err != nil {
@@ -562,7 +588,7 @@ func validateChartColumns(ctx context.Context, client *redash.Client, queryID in
 		// No cached result, so the server started executing to make one.
 		// Creating a chart is a metadata call and must not turn into a
 		// query run behind the caller's back, so the job goes.
-		cancelProbeJob(client, job.ID)
+		client.CancelJobBestEffort(job.ID)
 		return fmt.Errorf("query %d has no cached result for these parameter values, "+
 			"so the columns cannot be checked; run `rdsh query refresh %d`%s first",
 			queryID, queryID, refreshParamHint(overrides))
@@ -589,23 +615,6 @@ func validateChartColumns(ctx context.Context, client *redash.Client, queryID in
 	return fmt.Errorf("the query's result has no column %s; its columns are %s",
 		strings.Join(missing, ", "), strings.Join(available, ", "))
 }
-
-// cancelProbeJob stops the execution the probe started. It runs on a fresh
-// short-lived context because the caller's may be the very thing that
-// expired, and its failure is swallowed: the caller is already being told
-// the useful thing — to refresh the query — and burying that under a
-// cancellation error would help nobody.
-func cancelProbeJob(client *redash.Client, jobID string) {
-	if jobID == "" {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), probeCancelTimeout)
-	defer cancel()
-	_ = client.CancelJob(ctx, jobID)
-}
-
-// probeCancelTimeout bounds that best-effort cancellation.
-const probeCancelTimeout = 10 * time.Second
 
 // refreshParamHint spells the --param flags back into the refresh command
 // the error points at, so the run that fills the cache is the one this

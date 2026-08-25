@@ -725,3 +725,42 @@ func TestVisualizationTimeoutIsATimeout(t *testing.T) {
 		})
 	}
 }
+
+// TestVisualizationReadsTheQueryOnce pins that the query is fetched once per
+// invocation. update needs it twice over — to find the visualization, and
+// for the stored parameter defaults the column check runs against — and
+// asking the server again for what it just sent is a round trip that buys
+// nothing.
+func TestVisualizationReadsTheQueryOnce(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "create",
+			args: []string{"visualization", "create", "--query", "7", "--name", "daily",
+				"--type", "line", "--x", "day", "--y", "count"},
+		},
+		{
+			name: "update moving an axis",
+			args: []string{"visualization", "update", "9", "--query", "7", "--x", "team"},
+		},
+		{name: "delete", args: []string{"visualization", "delete", "9", "--query", "7"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := withChart()
+			srv := f.start(t)
+
+			if _, err := runRdsh(t, srv, "", tt.args...); err != nil {
+				t.Fatalf("%s error = %v", tt.name, err)
+			}
+
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if f.fetchCount != 1 {
+				t.Errorf("GET /api/queries/7 arrived %d times, want 1", f.fetchCount)
+			}
+		})
+	}
+}
