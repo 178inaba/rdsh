@@ -278,6 +278,12 @@ func (f *timeoutFlag) Set(s string) error {
 // auth login says something else again, because what it waits on is the
 // verification; everything else shares one of these rather than restating
 // it.
+//
+// `query create` is the deliberate exception: it executes only under
+// --refresh, and the usage string is registered for every invocation, so
+// most callers of it execute nothing. It therefore keeps
+// serverTimeoutUsage, and that the deadline bounds the execution too is
+// said in --refresh's own help, beside the flag that causes it.
 const (
 	jobTimeoutUsage    = "cancel the query after this duration (0 = no limit)"
 	serverTimeoutUsage = "give up on the server after this duration (0 = no limit)"

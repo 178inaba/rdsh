@@ -21,7 +21,10 @@ func savedQueryURL(srv *httptest.Server) string {
 }
 
 func TestQueryCreatePublishesAndPrintsURL(t *testing.T) {
-	f := &fakeServer{}
+	// The create answers with a result linked, so the URL really is the
+	// whole output: both streams share one buffer here, and the notice an
+	// unlinked create prints would count as a second line.
+	f := &fakeServer{createLinksResult: true}
 	srv := f.start(t)
 
 	out, err := runRdsh(t, srv, "", "query", "create", "--name", "signups", "SELECT 1", "--data-source", "5")
@@ -46,7 +49,7 @@ func TestQueryCreatePublishesAndPrintsURL(t *testing.T) {
 // else's list: the second call is what publishes, so --draft must skip it
 // rather than send is_draft true (which is what the query already is).
 func TestQueryCreateDraft(t *testing.T) {
-	f := &fakeServer{}
+	f := &fakeServer{createLinksResult: true}
 	srv := f.start(t)
 
 	out, err := runRdsh(t, srv, "", "query", "create", "--name", "part", "--draft", "SELECT 1", "--data-source", "5")
@@ -62,6 +65,206 @@ func TestQueryCreateDraft(t *testing.T) {
 	if f.updated != nil {
 		t.Errorf("publish body = %v, want no publish request at all", f.updated)
 	}
+}
+
+// TestQueryCreateNoticesAnEmptyPage covers what this command used to report
+// as an unqualified success: a query saved on a Redash that links no result
+// as it saves opens empty, and nothing said so. The URL is still the whole
+// of stdout and the run still succeeds — the page is what is missing, not
+// the query.
+func TestQueryCreateNoticesAnEmptyPage(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	out, errOut, err := runRdshSplit(t, srv, "query", "create", "--name", "signups", "SELECT 1",
+		"--data-source", "5")
+	if err != nil {
+		t.Fatalf("query create error = %v", err)
+	}
+	if want := savedQueryURL(srv) + "\n"; out != want {
+		t.Errorf("stdout = %q, want %q and nothing else", out, want)
+	}
+	assertRefreshNotice(t, errOut)
+}
+
+// TestQueryCreateLinkedResultIsSilent is the other half: a create that comes
+// back with a result on the page has nothing to report, so the notice must
+// not fire for everyone on a current Redash.
+func TestQueryCreateLinkedResultIsSilent(t *testing.T) {
+	f := &fakeServer{createLinksResult: true}
+	srv := f.start(t)
+
+	_, errOut, err := runRdshSplit(t, srv, "query", "create", "--name", "signups", "SELECT 1",
+		"--data-source", "5")
+	if err != nil {
+		t.Fatalf("query create error = %v", err)
+	}
+	assertNoNote(t, errOut)
+}
+
+// TestQueryCreateDraftNoticesAnEmptyPage pins that the notice is not about
+// publishing: a draft is saved to be referenced as query_<id>, which needs a
+// result just as much as a page a colleague opens does.
+func TestQueryCreateDraftNoticesAnEmptyPage(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	_, errOut, err := runRdshSplit(t, srv, "query", "create", "--name", "part", "--draft", "SELECT 1",
+		"--data-source", "5")
+	if err != nil {
+		t.Fatalf("query create --draft error = %v", err)
+	}
+	assertRefreshNotice(t, errOut)
+}
+
+// assertRefreshNotice checks the one thing a caller can act on: the command
+// that fills the page, named with the query's own ID.
+func assertRefreshNotice(t *testing.T, errOut string) {
+	t.Helper()
+	if want := fmt.Sprintf("rdsh query refresh %d", savedQueryID); !strings.Contains(errOut, want) {
+		t.Errorf("stderr = %q, want it to name %q", errOut, want)
+	}
+}
+
+// TestQueryCreateRefreshFillsThePage covers the flag that makes the page
+// open with data whatever the server does with the link: the saved query is
+// executed once, so there is nothing left to report on stderr. The rows the
+// execution produced stay unprinted — create's stdout is the URL alone.
+func TestQueryCreateRefreshFillsThePage(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	out, errOut, err := runRdshSplit(t, srv, "query", "create", "--name", "signups", "SELECT 1",
+		"--data-source", "5", "--refresh")
+	if err != nil {
+		t.Fatalf("query create --refresh error = %v", err)
+	}
+	if want := savedQueryURL(srv) + "\n"; out != want {
+		t.Errorf("stdout = %q, want %q and nothing else", out, want)
+	}
+	assertNoNote(t, errOut)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.refreshed == nil {
+		t.Error("the query was never executed, want --refresh to execute it")
+	}
+	if f.updated == nil {
+		t.Error("no publish request arrived, want the refresh to follow one")
+	}
+}
+
+// TestQueryCreateRefreshExecutesEvenWhenLinked pins that the flag does not
+// look before it executes. Skipping the execution when the create already
+// linked a result would make what --refresh costs depend on the server's
+// version, which is the one thing a caller passing it must not have to
+// reason about.
+func TestQueryCreateRefreshExecutesEvenWhenLinked(t *testing.T) {
+	f := &fakeServer{createLinksResult: true}
+	srv := f.start(t)
+
+	_, _, err := runRdshSplit(t, srv, "query", "create", "--name", "signups", "SELECT 1",
+		"--data-source", "5", "--refresh")
+	if err != nil {
+		t.Fatalf("query create --refresh error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.refreshed == nil {
+		t.Error("the query was never executed, want --refresh to execute whenever it is given")
+	}
+}
+
+// TestQueryCreateRefreshSendsTheStoredDefaults pins what the execution runs
+// with: Redash fails an execution that leaves a placeholder unfilled, and
+// the defaults the create just saved are the values the query page itself
+// would use.
+func TestQueryCreateRefreshSendsTheStoredDefaults(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	_, _, err := runRdshSplit(t, srv, "query", "create", "--name", "signups", "SELECT {{days}}",
+		"--data-source", "5", "--param-default", "days=7", "--refresh")
+	if err != nil {
+		t.Fatalf("query create --refresh error = %v", err)
+	}
+	assertRefreshedWith(t, f, map[string]any{"days": "7"})
+}
+
+// TestQueryCreateDraftRefresh covers the combination a query saved to be
+// referenced as query_<id> needs: nothing is published, and the page is
+// filled all the same.
+func TestQueryCreateDraftRefresh(t *testing.T) {
+	f := &fakeServer{}
+	srv := f.start(t)
+
+	_, errOut, err := runRdshSplit(t, srv, "query", "create", "--name", "part", "--draft", "SELECT 1",
+		"--data-source", "5", "--refresh")
+	if err != nil {
+		t.Fatalf("query create --draft --refresh error = %v", err)
+	}
+	assertNoNote(t, errOut)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.updated != nil {
+		t.Errorf("publish body = %v, want no publish request at all", f.updated)
+	}
+	if f.refreshed == nil {
+		t.Error("the query was never executed, want --refresh to execute it")
+	}
+}
+
+// TestQueryCreateRefreshFailureReportsTheQuery covers the second case that
+// exits 1 rather than 124: the query is saved by the time the refresh runs,
+// so the URL and the command that fills the page have to reach the caller,
+// and stdout must stay empty so nothing reads as a finished create.
+func TestQueryCreateRefreshFailureReportsTheQuery(t *testing.T) {
+	f := &fakeServer{missingParameter: true}
+	srv := f.start(t)
+
+	out, _, err := runRdshSplit(t, srv, "query", "create", "--name", "signups", "SELECT 1",
+		"--data-source", "5", "--refresh")
+	if err == nil {
+		t.Fatalf("output = %q, want a reported failure", out)
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want nothing", out)
+	}
+	if errors.Is(err, errTimeout) {
+		t.Errorf("error = %v, want an ordinary failure rather than a timeout", err)
+	}
+	assertRefreshReport(t, err, srv)
+}
+
+// TestQueryCreateRefreshTimeoutIsNotATimeout pins the same exception for a
+// refresh the --timeout cut off, the way the publish step is pinned: 124
+// would tell an agent to re-run as is, and re-running create saves the query
+// twice.
+func TestQueryCreateRefreshTimeoutIsNotATimeout(t *testing.T) {
+	f := &fakeServer{neverDone: true}
+	srv := f.start(t)
+
+	// Everything before the execution answers at once, so only the job that
+	// never finishes can reach the deadline.
+	out, _, err := runRdshSplit(t, srv, "query", "create", "--name", "signups", "SELECT 1",
+		"--data-source", "5", "--refresh", "--timeout", "50ms")
+	if err == nil {
+		t.Fatalf("output = %q, want a reported failure", out)
+	}
+	if errors.Is(err, errTimeout) {
+		t.Errorf("error = %v, want exit 1 rather than the timeout code", err)
+	}
+	assertRefreshReport(t, err, srv)
+}
+
+// assertRefreshReport checks what a caller needs to recover from a create
+// whose refresh failed: that the query exists, where, and what fills it.
+func assertRefreshReport(t *testing.T, err error, srv *httptest.Server) {
+	t.Helper()
+	assertReportsTheQuery(t, err, srv)
+	assertRefreshNotice(t, err.Error())
 }
 
 // TestQueryCreateSQLChannels checks that create takes SQL through the same
@@ -198,12 +401,19 @@ func TestQueryCreatePublishTimeoutIsNotATimeout(t *testing.T) {
 // create whose publish failed: that the query exists as a draft, and where.
 func assertUnpublishedReport(t *testing.T, err error, srv *httptest.Server) {
 	t.Helper()
-	url := savedQueryURL(srv)
-	if !strings.Contains(err.Error(), url) {
-		t.Errorf("error = %v, want the query URL %s", err, url)
-	}
+	assertReportsTheQuery(t, err, srv)
 	if !strings.Contains(err.Error(), "draft") {
 		t.Errorf("error = %v, want it to say the query remains a draft", err)
+	}
+}
+
+// assertReportsTheQuery checks the half both create failures share: the
+// query was saved, so its URL has to reach the caller rather than leaving
+// them to re-run a command that would save a second one.
+func assertReportsTheQuery(t *testing.T, err error, srv *httptest.Server) {
+	t.Helper()
+	if url := savedQueryURL(srv); !strings.Contains(err.Error(), url) {
+		t.Errorf("error = %v, want the query URL %s", err, url)
 	}
 }
 
@@ -578,12 +788,15 @@ func listRows(t *testing.T, out string) (string, []string) {
 	return lines[0], lines[1:]
 }
 
-// assertNoNote checks stderr for a listing that showed everything: nothing
-// must suggest there is more to see.
+// assertNoNote checks that a command with nothing to qualify said nothing:
+// a listing that showed everything, or a create that left a result on the
+// query's page. Every note these commands write is a note about the run
+// having fallen short, so an empty stderr is what "it did what it says"
+// looks like.
 func assertNoNote(t *testing.T, errOut string) {
 	t.Helper()
 	if errOut != "" {
-		t.Errorf("stderr = %q, want nothing when the listing was not truncated", errOut)
+		t.Errorf("stderr = %q, want nothing to qualify the run", errOut)
 	}
 }
 

@@ -671,7 +671,7 @@ func validateChartColumns(ctx context.Context, client *redash.Client, q *redash.
 		// been, and still have nothing linked to its page — which is the
 		// state that matters here, since it is what a chart would draw from.
 		return fmt.Errorf("query %d has no result on its page, so the columns cannot be checked; "+
-			"run `rdsh query refresh %d` first", q.ID, q.ID)
+			"run %s first", q.ID, refreshCommand(q.ID))
 	}
 	result, err := client.GetQueryResult(ctx, q.LatestQueryDataID)
 	if err != nil {

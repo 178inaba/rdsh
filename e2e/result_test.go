@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -31,6 +32,13 @@ func TestExecutingASavedQueryLinksItsResult(t *testing.T) {
 		t.Fatalf("a query nobody has executed carries result %v, want none", linked)
 	}
 
+	// The same state as the server holds it, but read the way the command
+	// reads it: off the create's own response. The notice is what proves
+	// that response carried latest_query_data_id at all.
+	if want := "rdsh query refresh"; !strings.Contains(created.stderr, want) {
+		t.Errorf("query create stderr = %q, want it to name %q", created.stderr, want)
+	}
+
 	refreshed := runRdsh(t, "query", "refresh", strconv.Itoa(id))
 	refreshed.assertExit(t, 0)
 	if got, want := refreshed.stdout, "n\n40\n"; got != want {
@@ -39,5 +47,30 @@ func TestExecutingASavedQueryLinksItsResult(t *testing.T) {
 
 	if getQuery(t, id)["latest_query_data_id"] == nil {
 		t.Error("the executed query carries no result, want the one the refresh produced")
+	}
+}
+
+// TestRefreshingADraftAsItIsCreatedLinksItsResult covers the one thing
+// `query create --refresh` newly depends on that nothing else here does:
+// that Redash executes a query which is still a draft, and links what it
+// produced to the draft's page. A draft saved to be referenced as
+// query_<id> needs that result as much as a page a colleague opens does.
+func TestRefreshingADraftAsItIsCreatedLinksItsResult(t *testing.T) {
+	created := runRdsh(t, "query", "create",
+		"--name", uniqueName(t),
+		"--data-source", dataSource,
+		"--draft", "--refresh",
+		// The SQL begins with the nonce's line comment, which pflag would
+		// otherwise read as a flag.
+		"--", nonced(t, "SELECT count(*) AS n FROM signups"))
+	created.assertExit(t, 0)
+	id := queryID(t, created.stdout)
+
+	query := getQuery(t, id)
+	if query["latest_query_data_id"] == nil {
+		t.Error("the refreshed draft carries no result, want the one the create's refresh produced")
+	}
+	if query["is_draft"] != true {
+		t.Errorf("is_draft = %v, want the query left a draft", query["is_draft"])
 	}
 }

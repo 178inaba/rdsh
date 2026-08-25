@@ -32,6 +32,7 @@ func newQueryCreateCmd(g *globalFlags) *cobra.Command {
 		file        string
 		dataSource  string
 		draft       bool
+		refresh     bool
 		params      paramFlagValues
 		timeout     timeoutFlag
 	)
@@ -41,8 +42,23 @@ func newQueryCreateCmd(g *globalFlags) *cobra.Command {
 		Long: `Save SQL as a Redash query and print its URL.
 
 SQL is taken from the argument, from --file, or from stdin when neither is
-given. Run the same SQL with ` + "`rdsh run`" + ` first and Redash attaches that
-result to the new query, so the URL opens with data already on it.
+given.
+
+A new query opens with data on it only if a result is linked to it. Running
+the same SQL with ` + "`rdsh run`" + ` first links one on Redash 26.3.0 and later,
+which fills the page at no further cost; older versions link a result only
+when the saved query is executed. Nothing here reads the server's version:
+when the query comes back with no result on its page, a line saying so and
+naming ` + "`rdsh query refresh`" + ` goes to stderr, and the command still exits 0.
+
+--refresh fills the page on every version instead, by executing the saved
+query once after saving it. That costs one execution whatever the server
+does with the link, so it suits saving SQL that has not been run yet;
+saving SQL ` + "`rdsh run`" + ` has just run is the other way round, and pays for a
+second execution only when the notice says the link was not made. A refresh
+that fails exits 1 rather than 124, even when --timeout is what stopped it:
+the query is saved by then, so re-running the command would save a second
+one, and its URL goes to stderr instead.
 
 The query is published unless --draft is given.
 
@@ -63,7 +79,8 @@ that is not among them is refused. Range, enum and dropdown-query parameters
 are the Redash UI's to define.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQueryCreate(cmd, args, g, name, description, file, dataSource, draft, params, timeout.Duration())
+			return runQueryCreate(cmd, args, g, name, description, file, dataSource,
+				draft, refresh, params, timeout.Duration())
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "name of the saved query (required)")
@@ -71,6 +88,9 @@ are the Redash UI's to define.`,
 	cmd.Flags().StringVarP(&file, "file", "f", "", "read SQL from a file")
 	cmd.Flags().StringVar(&dataSource, "data-source", "", "data source ID or name (default: the profile's data source)")
 	cmd.Flags().BoolVar(&draft, "draft", false, "leave the query a draft instead of publishing it")
+	cmd.Flags().BoolVar(&refresh, "refresh", false,
+		"execute the query once after saving it, so its page opens with a result "+
+			"(--timeout bounds that execution too)")
 	addParamDefinitionFlags(cmd, &params)
 	addTimeoutFlag(cmd, &timeout, serverTimeoutUsage)
 	return cmd
@@ -89,7 +109,7 @@ func addParamDefinitionFlags(cmd *cobra.Command, params *paramFlagValues) {
 }
 
 func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, description, file, dataSource string,
-	draft bool, params paramFlagValues, timeout time.Duration) error {
+	draft, refresh bool, params paramFlagValues, timeout time.Duration) error {
 	// Checked before anything that talks to the server, so a bad invocation
 	// cannot leave a query behind. --timeout needs no check of its own:
 	// timeoutFlag refuses a negative duration as the flags are parsed.
@@ -166,9 +186,56 @@ func runQueryCreate(cmd *cobra.Command, args []string, g *globalFlags, name, des
 		}
 	}
 
+	if refresh {
+		// Last, so the execution meets the query in the state it will be
+		// left in. The values are the defaults the create just saved:
+		// Redash substitutes only what the request carries, and a
+		// placeholder left unfilled fails the execution — which is why
+		// create requires every parameter it defines to have one.
+		values, _ := mergeParameters(definitions, nil)
+		if _, err := client.RefreshQuery(ctx, q.ID, values); err != nil {
+			// Not reported as a timeout even when the deadline is what
+			// stopped it, for the reason the publish step is not: the
+			// query is saved, and 124 tells an agent to re-run the command
+			// as it stands, which would save a second one. The rows the
+			// execution produced are not printed either — create's stdout
+			// is the URL and nothing else, and here it is not even that.
+			return fmt.Errorf("created %s but refreshing it failed, so its page has no result; "+
+				"run %s: %w", url, refreshCommand(q.ID), err)
+		}
+	}
+
 	fmt.Fprintln(cmd.OutOrStdout(), url)
+	// Read from the create's own response rather than by asking again: a
+	// version that links a result as the query is saved commits that link
+	// before the response is serialized, so what came back already says.
+	// A --refresh has just linked one, whatever the response said.
+	if !refresh && q.LatestQueryDataID == 0 {
+		fmt.Fprintln(cmd.ErrOrStderr(), unlinkedResultNotice(q.ID))
+	}
 	return nil
 }
+
+// unlinkedResultNotice is what a create that saved the query without a
+// result on its page reports. Like staleCacheNotice it is a note rather
+// than a failure: the query is saved and its URL is on stdout, which is
+// what was asked for — only the page behind it is empty, and filling it
+// costs an execution the caller did not ask for.
+//
+// A function rather than a constant because the recovery names the query,
+// and an agent that cannot copy the command out of the line would have to
+// compose it from the URL.
+func unlinkedResultNotice(id int) string {
+	return fmt.Sprintf("saved with no result on its page, so it opens empty; "+
+		"run %s to fill it", refreshCommand(id))
+}
+
+// refreshCommand spells the one command that puts a result on a query's
+// page. Three messages send a caller to it — this notice, a --refresh that
+// failed, and the chart check that refuses a query with nothing to check
+// against — and an agent consumer reads it out of stderr rather than
+// composing it, so it is written once.
+func refreshCommand(id int) string { return fmt.Sprintf("`rdsh query refresh %d`", id) }
 
 func newQueryUpdateCmd(g *globalFlags) *cobra.Command {
 	var (

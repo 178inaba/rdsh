@@ -93,6 +93,11 @@ type fakeServer struct {
 	// latest_query_data_id at zero, which is how a query nobody has
 	// executed reads back.
 	storedColumns []string
+	// createLinksResult makes POST /api/queries answer with a result
+	// already linked, which is what a Redash that backfills the link as the
+	// query is saved returns. Left false the create answers without the
+	// key, as every older version does.
+	createLinksResult bool
 	// missingParameter makes the execution endpoint refuse the way Redash
 	// refuses a placeholder it was given no value for: a failed job rather
 	// than a message, and an HTTP 400.
@@ -184,7 +189,11 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 			f.park(r)
 			return
 		}
-		mustJSON(w, map[string]any{"id": savedQueryID, "is_draft": true})
+		created := map[string]any{"id": savedQueryID, "is_draft": true}
+		if f.createLinksResult {
+			created["latest_query_data_id"] = storedResultID
+		}
+		mustJSON(w, created)
 	})
 	mux.HandleFunc(fmt.Sprintf("GET /api/queries/%d", savedQueryID), func(w http.ResponseWriter, r *http.Request) {
 		f.reach(getQueryRequest)

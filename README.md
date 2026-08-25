@@ -33,14 +33,22 @@ Run `rdsh --help` for the full reference.
 
 ### Saved queries
 
-Save SQL as a Redash query and get a URL to share. Run it first: Redash attaches the latest result of the same SQL and data source to the query as it is created, so the URL opens with data on it instead of needing a second execution.
+Save SQL as a Redash query and get a URL to share. The page behind that URL opens with data on it only if a result is linked to the query, and which call links one depends on what you already have:
 
 ```sh
-rdsh run -f signups.sql
+rdsh query create --name "Weekly signups" --refresh -f signups.sql   # not run yet
+```
+
+`--refresh` executes the saved query once, after saving it, which is what links a result on every Redash version. It costs exactly one execution.
+
+```sh
+rdsh run -f signups.sql                                              # already run
 rdsh query create --name "Weekly signups" -f signups.sql
 ```
 
-`query create` prints the URL and nothing else; the trailing segment is the query ID, which is what a Query Results data source needs for `query_<id>` references. New queries are published — visible in everyone's query list — unless `--draft` is passed:
+Redash 26.3.0 and later link the result of a matching run to the query as it is saved, so this way costs nothing beyond the run you had already done. Older versions link a result only when the saved query is executed, and the query then opens empty. rdsh reads no version to tell the two apart: when the new query comes back with no result on its page, a line naming `rdsh query refresh <id>` goes to stderr and the command still exits 0 — so read stderr before reporting the URL as shared.
+
+`query create` prints the URL and nothing else on stdout; the trailing segment is the query ID, which is what a Query Results data source needs for `query_<id>` references. New queries are published — visible in everyone's query list — unless `--draft` is passed:
 
 ```sh
 rdsh query create --name "signups (part)" --draft -f part.sql
@@ -143,7 +151,7 @@ Only that one setting is written. Everything else about the chart is left to Red
 
 Each is reachable through `--options-file` (`series.stacking`, `piesort`, `xAxis.type`), as is every other chart setting.
 
-The `refresh` in the first example is not incidental. Redash stores a visualization's options without validating them, so a chart naming a column the result does not have is accepted with a 200 and renders as a blank chart nobody is told about. `rdsh` therefore checks `--x` and `--y` against the result the query page already holds before creating anything, and a mismatch fails the command naming the columns that do exist. A query with no result on its page yet has nothing to check against, so nothing is created and the error says to run `rdsh query refresh` first. Saving a query does not always leave it with one — depending on the Redash version, a query saved by `rdsh query create` can open empty even though `rdsh run` produced the same rows a moment earlier — so a chart on a freshly saved query is worth refreshing for first. Nothing is lost by refreshing when the result was already there.
+The `refresh` in the first example is not incidental. Redash stores a visualization's options without validating them, so a chart naming a column the result does not have is accepted with a 200 and renders as a blank chart nobody is told about. `rdsh` therefore checks `--x` and `--y` against the result the query page already holds before creating anything, and a mismatch fails the command naming the columns that do exist. A query with no result on its page yet has nothing to check against, so nothing is created and the error says to run `rdsh query refresh` first. That is the state a `query create` reports on stderr, and a query saved with `--refresh` never reaches it — so a chart on a query saved that way needs no refresh of its own.
 
 That result is read by ID, which is what lets creating a chart be a pure metadata call: it never executes the query and never adds anything to its cache. Parameter values do not enter into it either — the same SQL yields the same columns, so the check reads the same names whatever values the page is viewed with.
 
@@ -187,7 +195,7 @@ RDSH_URL=https://redash.example.com RDSH_API_KEY=... rdsh run "SELECT 1" --data-
 
 ### Timeouts
 
-Every command that talks to Redash takes `--timeout`, defaulting to 90s; exceeding it exits with code 124. `--timeout 0` removes the limit, and a negative duration is refused before anything is sent. For the two commands that execute a query — `rdsh run` and `rdsh query refresh` — the expiry also cancels the server-side job.
+Every command that talks to Redash takes `--timeout`, defaulting to 90s; exceeding it exits with code 124. `--timeout 0` removes the limit, and a negative duration is refused before anything is sent. Wherever a query is executed — `rdsh run`, `rdsh query refresh`, and `rdsh query create --refresh` — the expiry also cancels the server-side job, and the one `--timeout` bounds the whole command, so a heavy query saved with `--refresh` needs a longer one.
 
 ```sh
 rdsh run -f heavy.sql --timeout 30m
@@ -195,7 +203,7 @@ rdsh run -f heavy.sql --timeout 30m
 
 On `rdsh auth login` it bounds the verification request alone — the prompts wait for you however long you take. `rdsh profile list` and `rdsh profile use` only read and write the config file, so they take no `--timeout`.
 
-One case exits 1 rather than 124: a `query create` that saved the query but could not publish it, including when the timeout is what stopped the publish. The query exists as a draft, so stderr carries its URL — re-running the command would save a second query.
+Two cases exit 1 rather than 124, both of them a `query create` that saved the query and then failed — publishing it, or the `--refresh` execution — including when the timeout is what stopped that step. The query exists either way, so stderr carries its URL: re-running the command would save a second query.
 
 ### Interrupts
 
