@@ -21,7 +21,7 @@ func TestRunPrintsTheSeededRows(t *testing.T) {
 		{
 			name: "every seeded signup",
 			sql:  "SELECT count(*) AS n FROM signups",
-			want: "n\n40\n",
+			want: "n\n41\n",
 		},
 		{
 			// A proper subset rather than every row, so a filter that
