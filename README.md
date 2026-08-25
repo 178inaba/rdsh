@@ -249,6 +249,15 @@ The seed database holds `signups` (a date, a number and two text columns) and
 `events` (a timestamp and a decimal amount), so a parametrized query has
 something of every type to filter on.
 
+The e2e suite runs against that sandbox, checking the Redash-side contracts
+the in-process fakes cannot be wrong about on their own. It is behind a build
+tag, so `go test ./...` never reaches it, and it fails rather than skips when
+the two variables are unset:
+
+```sh
+go test -tags e2e ./...
+```
+
 Running the script again against a ready stack changes nothing and prints the
 same two lines. The UI at http://localhost:15000 takes `admin@example.com` with
 the password `sandbox`.
