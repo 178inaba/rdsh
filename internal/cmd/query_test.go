@@ -154,6 +154,28 @@ func TestQueryCreateRefreshFillsThePage(t *testing.T) {
 	}
 }
 
+// TestQueryCreateRefreshExecutesEvenWhenLinked pins that the flag does not
+// look before it executes. Skipping the execution when the create already
+// linked a result would make what --refresh costs depend on the server's
+// version, which is the one thing a caller passing it must not have to
+// reason about.
+func TestQueryCreateRefreshExecutesEvenWhenLinked(t *testing.T) {
+	f := &fakeServer{createLinksResult: true}
+	srv := f.start(t)
+
+	_, _, err := runRdshSplit(t, srv, "query", "create", "--name", "signups", "SELECT 1",
+		"--data-source", "5", "--refresh")
+	if err != nil {
+		t.Fatalf("query create --refresh error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.refreshed == nil {
+		t.Error("the query was never executed, want --refresh to execute whenever it is given")
+	}
+}
+
 // TestQueryCreateRefreshSendsTheStoredDefaults pins what the execution runs
 // with: Redash fails an execution that leaves a placeholder unfilled, and
 // the defaults the create just saved are the values the query page itself
@@ -766,12 +788,15 @@ func listRows(t *testing.T, out string) (string, []string) {
 	return lines[0], lines[1:]
 }
 
-// assertNoNote checks stderr for a listing that showed everything: nothing
-// must suggest there is more to see.
+// assertNoNote checks that a command with nothing to qualify said nothing:
+// a listing that showed everything, or a create that left a result on the
+// query's page. Every note these commands write is a note about the run
+// having fallen short, so an empty stderr is what "it did what it says"
+// looks like.
 func assertNoNote(t *testing.T, errOut string) {
 	t.Helper()
 	if errOut != "" {
-		t.Errorf("stderr = %q, want nothing when the listing was not truncated", errOut)
+		t.Errorf("stderr = %q, want nothing to qualify the run", errOut)
 	}
 }
 
