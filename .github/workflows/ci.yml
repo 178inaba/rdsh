@@ -52,3 +52,43 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: ${{ steps.version.outputs.version }}
+
+  e2e:
+    name: E2E
+    runs-on: ubuntu-latest
+    # The sandbox pulls four images and runs Redash's migrations before the
+    # first test, so a hang here needs a deadline of its own rather than the
+    # six-hour default.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # Retried in a loop rather than with an action of its own: a transient
+      # registry failure must not read as a broken contract. The services are
+      # named because `lint` has no profile and is therefore always enabled,
+      # so an unqualified pull would fetch golangci-lint as well.
+      - name: Pull the sandbox images
+        run: |
+          for attempt in 1 2 3; do
+            if docker compose --profile redash pull --quiet postgres redis server scheduler worker; then
+              exit 0
+            fi
+            echo "::warning::pulling the sandbox images failed (attempt $attempt of 3)"
+            sleep 15
+          done
+          exit 1
+      # The script prints the two export lines and nothing else, so eval is
+      # what points this shell at the sandbox — and $GITHUB_ENV is what
+      # carries them on, since the step below runs in a shell of its own.
+      - name: Start the Redash sandbox
+        run: |
+          eval "$(scripts/redash-up.sh)"
+          { echo "RDSH_URL=$RDSH_URL"; echo "RDSH_API_KEY=$RDSH_API_KEY"; } >> "$GITHUB_ENV"
+      - run: go test -tags e2e ./...
+      # Without this a red run says which assertion failed and nothing about
+      # what the sandbox was doing when it did.
+      - name: Dump the sandbox logs
+        if: failure()
+        run: docker compose --profile redash logs
