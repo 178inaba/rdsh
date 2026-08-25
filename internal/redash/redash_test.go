@@ -39,7 +39,16 @@ type fakeRedash struct {
 	cancelStatus  int // HTTP status for DELETE, default 200
 	submittedBody map[string]any
 	refreshBody   map[string]any // body of POST /api/queries/7/results
-	queryOptions  map[string]any // options served by GET /api/queries/7
+	// noLatestResult serves the query with no linked result, which is how a
+	// query nobody has executed reads back.
+	noLatestResult bool
+	// visualizations is what GET /api/queries/7 serves as its
+	// visualizations array; nil leaves the key out.
+	visualizations []map[string]any
+	createdViz     map[string]any // body of POST /api/visualizations
+	updatedViz     map[string]any // body of POST /api/visualizations/9
+	deletedViz     bool           // DELETE /api/visualizations/9 arrived
+	queryOptions   map[string]any // options served by GET /api/queries/7
 	// nullQueryOptions serves options as an explicit null instead, which is
 	// a different shape from the key being absent.
 	nullQueryOptions bool
@@ -148,11 +157,17 @@ func (f *fakeRedash) server() *httptest.Server {
 			"id": 7, "name": "saved", "query": "SELECT 1", "data_source_id": 3,
 			"is_draft": true, "version": f.queryVersion,
 		}
+		if !f.noLatestResult {
+			query["latest_query_data_id"] = 42
+		}
 		switch {
 		case f.nullQueryOptions:
 			query["options"] = nil
 		case f.queryOptions != nil:
 			query["options"] = f.queryOptions
+		}
+		if f.visualizations != nil {
+			query["visualizations"] = f.visualizations
 		}
 		writeJSON(w, query)
 	})
@@ -181,6 +196,31 @@ func (f *fakeRedash) server() *httptest.Server {
 			return
 		}
 		writeJSON(w, map[string]any{"id": 7, "name": "saved", "is_draft": false})
+	})
+	mux.HandleFunc("POST /api/visualizations", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if err := json.NewDecoder(r.Body).Decode(&f.createdViz); err != nil {
+			f.t.Errorf("decode created visualization: %v", err)
+		}
+		writeJSON(w, map[string]any{
+			"id": 9, "type": f.createdViz["type"], "name": f.createdViz["name"],
+			"options": f.createdViz["options"],
+		})
+	})
+	mux.HandleFunc("POST /api/visualizations/9", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if err := json.NewDecoder(r.Body).Decode(&f.updatedViz); err != nil {
+			f.t.Errorf("decode updated visualization: %v", err)
+		}
+		writeJSON(w, map[string]any{"id": 9, "type": "CHART", "name": "chart"})
+	})
+	mux.HandleFunc("DELETE /api/visualizations/9", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.deletedViz = true
+		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("GET /api/queries", f.handleQueryList)
 	mux.HandleFunc("GET /api/queries/my", f.handleQueryList)
@@ -1082,5 +1122,178 @@ func TestListQueriesNoMatches(t *testing.T) {
 	}
 	if len(queries) != 0 || count != 0 {
 		t.Errorf("ListQueries() = %d rows, count %d, want nothing", len(queries), count)
+	}
+}
+
+// TestGetQueryResultReadsTheStoredResult pins the read that lets a chart's
+// column names be checked without executing anything: the query reports the
+// result it is linked to, and that result is fetched by ID.
+func TestGetQueryResultReadsTheStoredResult(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	c := newTestClient(srv, "k")
+	q, err := c.GetQuery(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetQuery() error = %v", err)
+	}
+	if q.LatestQueryDataID != 42 {
+		t.Fatalf("LatestQueryDataID = %d, want 42", q.LatestQueryDataID)
+	}
+
+	result, err := c.GetQueryResult(context.Background(), q.LatestQueryDataID)
+	if err != nil {
+		t.Fatalf("GetQueryResult() error = %v", err)
+	}
+	if len(result.Columns) != 2 || result.Columns[0].Name != "id" || result.Columns[1].Name != "name" {
+		t.Errorf("Columns = %+v, want id, name", result.Columns)
+	}
+}
+
+// TestGetQueryWithoutAResult covers the query nobody has executed, which is
+// what sends `rdsh visualization create` to `rdsh query refresh` rather than
+// letting it check columns against nothing.
+func TestGetQueryWithoutAResult(t *testing.T) {
+	f := &fakeRedash{t: t, noLatestResult: true}
+	srv := f.server()
+	defer srv.Close()
+
+	q, err := newTestClient(srv, "k").GetQuery(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetQuery() error = %v", err)
+	}
+	if q.LatestQueryDataID != 0 {
+		t.Errorf("LatestQueryDataID = %d, want 0", q.LatestQueryDataID)
+	}
+}
+
+// TestGetQueryReadsVisualizations pins that reading a query carries the
+// charts attached to it, which is the only way to reach a visualization's
+// ID and its stored options: Redash has no endpoint that reads one by ID.
+func TestGetQueryReadsVisualizations(t *testing.T) {
+	f := &fakeRedash{t: t, visualizations: []map[string]any{
+		{"id": 9, "type": "CHART", "name": "daily", "options": map[string]any{
+			"globalSeriesType": "line",
+			"columnMapping":    map[string]any{"day": "x", "count": "y"},
+		}},
+	}}
+	srv := f.server()
+	defer srv.Close()
+
+	q, err := newTestClient(srv, "k").GetQuery(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetQuery() error = %v", err)
+	}
+	if len(q.Visualizations) != 1 {
+		t.Fatalf("len(Visualizations) = %d, want 1", len(q.Visualizations))
+	}
+	v := q.Visualizations[0]
+	if v.ID != 9 || v.Type != "CHART" || v.Name != "daily" {
+		t.Errorf("Visualizations[0] = %+v, want id 9, CHART, daily", v)
+	}
+	// The options blob is kept key by key rather than decoded into fields:
+	// Redash stores it without validating it and an update replaces it
+	// wholesale, so an edit has to be able to send back what it did not
+	// mean to touch.
+	if got := string(v.Options["globalSeriesType"]); got != `"line"` {
+		t.Errorf("options globalSeriesType = %s, want \"line\"", got)
+	}
+	if _, ok := v.Options["columnMapping"]; !ok {
+		t.Errorf("options = %v, want a columnMapping key kept as it arrived", v.Options)
+	}
+}
+
+// TestGetQueryWithoutVisualizations pins that a query carrying no charts
+// reads back as none rather than as a failure.
+func TestGetQueryWithoutVisualizations(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	q, err := newTestClient(srv, "k").GetQuery(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetQuery() error = %v", err)
+	}
+	if q.Visualizations != nil {
+		t.Errorf("Visualizations = %+v, want nil", q.Visualizations)
+	}
+}
+
+func TestCreateVisualization(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	created, err := newTestClient(srv, "k").CreateVisualization(context.Background(), redash.NewVisualization{
+		QueryID: 7,
+		Type:    "CHART",
+		Name:    "daily",
+		Options: map[string]json.RawMessage{
+			"globalSeriesType": json.RawMessage(`"line"`),
+			"columnMapping":    json.RawMessage(`{"day":"x","count":"y"}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateVisualization() error = %v", err)
+	}
+	if created.ID != 9 {
+		t.Errorf("created ID = %d, want 9", created.ID)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.createdViz["query_id"] != float64(7) || f.createdViz["type"] != "CHART" ||
+		f.createdViz["name"] != "daily" {
+		t.Errorf("created visualization = %v, want query_id 7, CHART, daily", f.createdViz)
+	}
+	want := map[string]any{
+		"globalSeriesType": "line",
+		"columnMapping":    map[string]any{"day": "x", "count": "y"},
+	}
+	if !reflect.DeepEqual(f.createdViz["options"], want) {
+		t.Errorf("created options = %#v, want %#v", f.createdViz["options"], want)
+	}
+}
+
+// TestUpdateVisualizationSendsOnlyWhatChanged pins that a nil field is left
+// out of the request: Redash replaces every key the body carries, so a
+// rename must not also rewrite the options blob.
+func TestUpdateVisualizationSendsOnlyWhatChanged(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	name := "renamed"
+	if _, err := newTestClient(srv, "k").UpdateVisualization(context.Background(), 9,
+		redash.VisualizationUpdate{Name: &name}); err != nil {
+		t.Fatalf("UpdateVisualization() error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.updatedViz["name"] != "renamed" {
+		t.Errorf("updated name = %v, want renamed", f.updatedViz["name"])
+	}
+	for _, key := range []string{"type", "options"} {
+		if _, ok := f.updatedViz[key]; ok {
+			t.Errorf("updated body carries %s = %v, want the key left out", key, f.updatedViz[key])
+		}
+	}
+}
+
+func TestDeleteVisualization(t *testing.T) {
+	f := &fakeRedash{t: t}
+	srv := f.server()
+	defer srv.Close()
+
+	if err := newTestClient(srv, "k").DeleteVisualization(context.Background(), 9); err != nil {
+		t.Fatalf("DeleteVisualization() error = %v", err)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.deletedViz {
+		t.Error("the delete never reached the server")
 	}
 }

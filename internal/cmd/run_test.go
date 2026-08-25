@@ -22,12 +22,14 @@ import (
 // Requests an interrupt test waits for before signalling, so the signal
 // lands with the command in the place the test is about.
 const (
-	pollRequest        = "poll"
-	cancelRequest      = "cancel"
-	dataSourcesRequest = "data sources"
-	updateRequest      = "update"
-	getQueryRequest    = "get query"
-	listQueriesRequest = "list queries"
+	pollRequest         = "poll"
+	cancelRequest       = "cancel"
+	dataSourcesRequest  = "data sources"
+	updateRequest       = "update"
+	getQueryRequest     = "get query"
+	listQueriesRequest  = "list queries"
+	createVizRequest    = "create visualization"
+	storedResultRequest = "stored result"
 )
 
 // savedQueryID is the ID the fake gives every query it is asked to save,
@@ -35,6 +37,12 @@ const (
 const (
 	savedQueryID      = 7
 	savedQueryVersion = 3
+	// savedVizID is the ID the fake gives the visualization it holds, and
+	// the one it accepts an update or a delete for.
+	savedVizID = 9
+	// storedResultID is the result the saved query links to when the fake is
+	// set up with stored columns.
+	storedResultID = 77
 )
 
 // defaultSavedQuerySQL is the SQL the fake serves for that query unless a
@@ -47,19 +55,23 @@ const defaultSavedQuerySQL = "SELECT 1"
 // an endpoint never answer, standing in for a wedged Redash; they are set
 // before start and never written afterwards.
 type fakeServer struct {
-	mu              sync.Mutex
-	neverDone       bool // job stays PENDING forever; used by timeout tests
-	rejectSession   bool // GET /api/session returns 401; used by login tests
-	hangSession     bool // GET /api/session never answers
-	hangCancel      bool // DELETE /api/jobs/... never answers
-	hangList        bool // GET /api/data_sources never answers
-	hangCreate      bool // POST /api/queries never answers
-	rejectUpdate    bool // POST /api/queries/<id> returns 400
-	hangUpdate      bool // POST /api/queries/<id> never answers
-	hangGet         bool // GET /api/queries/<id> never answers
-	conflict        bool // POST /api/queries/<id> returns 409
-	hangListQueries bool // GET /api/queries never answers
-	savedQueries    int  // queries the listing endpoints hold
+	mu               sync.Mutex
+	neverDone        bool // job stays PENDING forever; used by timeout tests
+	rejectSession    bool // GET /api/session returns 401; used by login tests
+	hangSession      bool // GET /api/session never answers
+	hangCancel       bool // DELETE /api/jobs/... never answers
+	hangList         bool // GET /api/data_sources never answers
+	hangCreate       bool // POST /api/queries never answers
+	rejectUpdate     bool // POST /api/queries/<id> returns 400
+	hangUpdate       bool // POST /api/queries/<id> never answers
+	hangGet          bool // GET /api/queries/<id> never answers
+	conflict         bool // POST /api/queries/<id> returns 409
+	hangListQueries  bool // GET /api/queries never answers
+	hangStoredResult bool // GET /api/query_results/<stored> never answers
+	hangCreateViz    bool // POST /api/visualizations never answers
+	hangUpdateViz    bool // POST /api/visualizations/<id> never answers
+	hangDeleteViz    bool // DELETE /api/visualizations/<id> never answers
+	savedQueries     int  // queries the listing endpoints hold
 	// savedQuerySQL is the SQL GET /api/queries/<id> serves; empty means
 	// defaultSavedQuerySQL. A test that reads the SQL back sets it, which is
 	// what makes the show command's newline handling observable.
@@ -72,6 +84,15 @@ type fakeServer struct {
 	// tests that need the keys beside the parameters. It wins over
 	// savedQueryParameters when both are set.
 	savedQueryOptions map[string]any
+	// savedQueryVisualizations is what GET /api/queries/<id> serves as its
+	// visualizations array; nil leaves the key out, which is what a query
+	// with no charts on it reads back as.
+	savedQueryVisualizations []map[string]any
+	// storedColumns makes the query report a linked result carrying these
+	// column names, served from GET /api/query_results/<id>. Nil leaves
+	// latest_query_data_id at zero, which is how a query nobody has
+	// executed reads back.
+	storedColumns []string
 	// missingParameter makes the execution endpoint refuse the way Redash
 	// refuses a placeholder it was given no value for: a failed job rather
 	// than a message, and an HTTP 400.
@@ -79,10 +100,22 @@ type fakeServer struct {
 	cancelled        bool
 	submitted        bool
 	fetched          bool           // GET /api/queries/<id> arrived
+	fetchCount       int            // how many times it arrived
 	listedSources    bool           // GET /api/data_sources arrived
 	created          map[string]any // body of POST /api/queries
-	// refreshed is the body of POST /api/queries/<id>/results.
+	// storedResultReads counts GET /api/query_results/<stored>, so a test
+	// can assert that a command ran no column check at all.
+	storedResultReads int
+	// refreshed is the body of POST /api/queries/<id>/results, the one
+	// endpoint that executes a saved query. A command that must not execute
+	// anything is checked by this staying nil.
 	refreshed map[string]any
+	// createdViz is the body of POST /api/visualizations, updatedViz that
+	// of POST /api/visualizations/<id>, and deletedViz records that the
+	// DELETE arrived.
+	createdViz map[string]any
+	updatedViz map[string]any
+	deletedViz bool
 	// listed is the query string of every listing request that arrived, in
 	// order, so a test can check both the endpoint and how it was called.
 	listed []*url.URL
@@ -157,6 +190,7 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 		f.reach(getQueryRequest)
 		f.mu.Lock()
 		f.fetched = true
+		f.fetchCount++
 		f.mu.Unlock()
 		if f.hangGet {
 			f.park(r)
@@ -170,11 +204,17 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 			"id": savedQueryID, "name": "saved", "description": "what it is for", "query": sql,
 			"data_source_id": 5, "is_draft": true, "version": savedQueryVersion,
 		}
+		if f.storedColumns != nil {
+			query["latest_query_data_id"] = storedResultID
+		}
 		switch {
 		case f.savedQueryOptions != nil:
 			query["options"] = f.savedQueryOptions
 		case f.savedQueryParameters != nil:
 			query["options"] = map[string]any{"parameters": f.savedQueryParameters}
+		}
+		if f.savedQueryVisualizations != nil {
+			query["visualizations"] = f.savedQueryVisualizations
 		}
 		mustJSON(w, query)
 	})
@@ -198,6 +238,24 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 			}
 			mustJSON(w, map[string]any{"job": job})
 		})
+	mux.HandleFunc(fmt.Sprintf("GET /api/query_results/%d", storedResultID),
+		func(w http.ResponseWriter, r *http.Request) {
+			f.reach(storedResultRequest)
+			f.mu.Lock()
+			f.storedResultReads++
+			f.mu.Unlock()
+			if f.hangStoredResult {
+				f.park(r)
+				return
+			}
+			columns := make([]map[string]any, len(f.storedColumns))
+			for i, name := range f.storedColumns {
+				columns[i] = map[string]any{"name": name, "friendly_name": name, "type": "string"}
+			}
+			mustJSON(w, map[string]any{"query_result": map[string]any{"data": map[string]any{
+				"columns": columns, "rows": []map[string]any{},
+			}}})
+		})
 	mux.HandleFunc(fmt.Sprintf("POST /api/queries/%d", savedQueryID), func(w http.ResponseWriter, r *http.Request) {
 		f.reach(updateRequest)
 		f.mu.Lock()
@@ -219,6 +277,43 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 			mustJSON(w, map[string]any{"id": savedQueryID, "is_draft": false})
 		}
 	})
+	mux.HandleFunc("POST /api/visualizations", func(w http.ResponseWriter, r *http.Request) {
+		f.reach(createVizRequest)
+		f.mu.Lock()
+		if err := json.NewDecoder(r.Body).Decode(&f.createdViz); err != nil {
+			t.Errorf("decode created visualization: %v", err)
+		}
+		f.mu.Unlock()
+		if f.hangCreateViz {
+			f.park(r)
+			return
+		}
+		mustJSON(w, map[string]any{"id": savedVizID, "type": f.createdViz["type"], "name": f.createdViz["name"]})
+	})
+	mux.HandleFunc(fmt.Sprintf("POST /api/visualizations/%d", savedVizID),
+		func(w http.ResponseWriter, r *http.Request) {
+			f.mu.Lock()
+			if err := json.NewDecoder(r.Body).Decode(&f.updatedViz); err != nil {
+				t.Errorf("decode updated visualization: %v", err)
+			}
+			f.mu.Unlock()
+			if f.hangUpdateViz {
+				f.park(r)
+				return
+			}
+			mustJSON(w, map[string]any{"id": savedVizID, "type": "CHART", "name": "daily"})
+		})
+	mux.HandleFunc(fmt.Sprintf("DELETE /api/visualizations/%d", savedVizID),
+		func(w http.ResponseWriter, r *http.Request) {
+			f.mu.Lock()
+			f.deletedViz = true
+			f.mu.Unlock()
+			if f.hangDeleteViz {
+				f.park(r)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		})
 	mux.HandleFunc("GET /api/queries", f.handleQueryList)
 	mux.HandleFunc("GET /api/queries/my", f.handleQueryList)
 	mux.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) {

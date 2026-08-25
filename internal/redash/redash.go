@@ -1,6 +1,7 @@
 // Package redash is a minimal Redash REST API client covering query
 // execution, ad-hoc and by saved-query ID: submit, poll, fetch, cancel,
-// plus saved-query creation, reading and editing, data-source listing and
+// plus saved-query creation, reading and editing, reading a stored result by
+// ID, visualization creation, editing and deletion, data-source listing and
 // a session check for login verification.
 package redash
 
@@ -93,10 +94,57 @@ type Query struct {
 	// against the query as it stands; Redash refuses one carrying a stale
 	// value.
 	Version int `json:"version"`
+	// LatestQueryDataID is the result Redash shows on the query page, and
+	// draws every chart on it from. Zero means the query has none, which is
+	// what a query nobody has executed reads back as.
+	LatestQueryDataID int `json:"latest_query_data_id"`
 	// Options carries the settings the query holds beside its SQL. An
 	// update replaces the whole object, so it is decoded in a form that
 	// survives being written back: see QueryOptions.
 	Options QueryOptions `json:"options"`
+	// Visualizations is the charts attached to the query. Only reading one
+	// query carries them — the listing endpoints leave the key out — and
+	// they are the only way to reach a visualization at all, since Redash
+	// has no endpoint that reads one by its ID.
+	Visualizations []Visualization `json:"visualizations"`
+}
+
+// Visualization is one chart or table shown on a saved query's page.
+type Visualization struct {
+	ID   int    `json:"id"`
+	Type string `json:"type"`
+	Name string `json:"name"`
+	// Options is the settings blob the front end renders from, kept key by
+	// key as it arrived rather than decoded into fields. Redash stores it
+	// without validating it and an update replaces every key the request
+	// carries, so an edit has to be able to send back what it never meant
+	// to touch — the same problem QueryOptions.Extra solves, over a schema
+	// with far more keys and no field here worth naming.
+	Options map[string]json.RawMessage `json:"options"`
+}
+
+// NewVisualization holds the fields the API accepts when a visualization is
+// created. Redash does not validate Options at all, so a malformed one is
+// stored without complaint and shows up only as a blank chart in the UI.
+type NewVisualization struct {
+	QueryID int                        `json:"query_id"`
+	Type    string                     `json:"type"`
+	Name    string                     `json:"name"`
+	Options map[string]json.RawMessage `json:"options"`
+}
+
+// VisualizationUpdate holds the fields to change on a visualization; a nil
+// field is left as it is. Options replaces the whole blob, so it has to be
+// composed from one that was just read rather than from nothing — which is
+// what keeps a rename from clearing the chart's settings.
+type VisualizationUpdate struct {
+	Type *string `json:"type,omitempty"`
+	Name *string `json:"name,omitempty"`
+	// Options is a pointer for the same reason Type and Name are: an empty
+	// object is a value — it resets the visualization to the front end's own
+	// defaults — and a plain map with omitempty could not tell that apart
+	// from an edit that leaves the options alone.
+	Options *map[string]json.RawMessage `json:"options,omitempty"`
 }
 
 // QueryOptions is a saved query's options object. Redash's update replaces
@@ -360,7 +408,7 @@ func (c *Client) awaitResult(ctx context.Context, job *Job) (*QueryResult, error
 		switch job.Status {
 		case StatusPending, StatusStarted:
 		case StatusSuccess:
-			return c.getQueryResult(ctx, job.QueryResultID)
+			return c.GetQueryResult(ctx, job.QueryResultID)
 		case StatusFailure:
 			return nil, fmt.Errorf("query failed: %s", job.Error)
 		case StatusCancelled:
@@ -466,19 +514,30 @@ func (c *Client) CancelJob(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/api/jobs/"+id, nil, nil)
 }
 
-func (c *Client) getQueryResult(ctx context.Context, resultID int) (*QueryResult, error) {
+// queryResultPayload is the shape a stored result arrives in.
+type queryResultPayload struct {
+	Data struct {
+		Columns []Column         `json:"columns"`
+		Rows    []map[string]any `json:"rows"`
+	} `json:"data"`
+}
+
+func (p *queryResultPayload) result() *QueryResult {
+	return &QueryResult{Columns: p.Data.Columns, Rows: p.Data.Rows}
+}
+
+// GetQueryResult reads one stored result by ID. Paired with a query's
+// LatestQueryDataID it is how the result the query page shows is read
+// without executing anything, which is what lets a chart's column names be
+// checked against it.
+func (c *Client) GetQueryResult(ctx context.Context, resultID int) (*QueryResult, error) {
 	var resp struct {
-		QueryResult struct {
-			Data struct {
-				Columns []Column         `json:"columns"`
-				Rows    []map[string]any `json:"rows"`
-			} `json:"data"`
-		} `json:"query_result"`
+		QueryResult queryResultPayload `json:"query_result"`
 	}
 	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/api/query_results/%d", resultID), nil, &resp); err != nil {
 		return nil, err
 	}
-	return &QueryResult{Columns: resp.QueryResult.Data.Columns, Rows: resp.QueryResult.Data.Rows}, nil
+	return resp.QueryResult.result(), nil
 }
 
 // CreateQuery saves a new query. Redash forces the new query to be a draft
@@ -520,6 +579,32 @@ func (c *Client) UpdateQuery(ctx context.Context, id int, u QueryUpdate) (*Query
 		return nil, err
 	}
 	return &updated, nil
+}
+
+// CreateVisualization attaches a new visualization to a query and returns
+// it as the server now holds it.
+func (c *Client) CreateVisualization(ctx context.Context, v NewVisualization) (*Visualization, error) {
+	var created Visualization
+	if err := c.do(ctx, http.MethodPost, "/api/visualizations", v, &created); err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+// UpdateVisualization changes the fields u sets and returns the
+// visualization as the server now holds it. Redash ignores a query_id in
+// the body, so a visualization cannot be moved between queries this way.
+func (c *Client) UpdateVisualization(ctx context.Context, id int, u VisualizationUpdate) (*Visualization, error) {
+	var updated Visualization
+	if err := c.do(ctx, http.MethodPost, fmt.Sprintf("/api/visualizations/%d", id), u, &updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+// DeleteVisualization removes the visualization from its query.
+func (c *Client) DeleteVisualization(ctx context.Context, id int) error {
+	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/api/visualizations/%d", id), nil, nil)
 }
 
 // queryListPageSize is how many queries one listing request asks for. The
