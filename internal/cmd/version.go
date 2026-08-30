@@ -12,23 +12,33 @@ import (
 // commands themselves follow: nothing mutates it after link time.
 var version string
 
-// resolveVersion reports the version the root command prints, from the
-// value the linker embedded and, failing that, the build information the
-// toolchain recorded. GoReleaser's {{.Version}} carries no v prefix, so
-// neither does what this returns — the fallback is stripped to match,
-// since a module version does carry one.
+// moduleVersion reports the version the toolchain recorded: the module
+// version for `go install …@vX.Y.Z`, and either (devel) or a VCS-stamped
+// pseudo-version for a local `go build`. Empty when there is no build
+// information to read.
+func moduleVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	return info.Main.Version
+}
+
+// resolveVersion reports the version the root command prints, preferring
+// what the linker embedded over what the toolchain recorded. GoReleaser's
+// {{.Version}} carries no v prefix, so neither does what this returns —
+// the fallback is stripped to match, since a module version does carry
+// one.
 //
-// buildInfo is a parameter rather than a direct debug.ReadBuildInfo call
-// so that each branch can be exercised: what the real one answers is a
-// property of how the test binary itself was built.
-func resolveVersion(embedded string, buildInfo func() (*debug.BuildInfo, bool)) string {
+// Both are parameters so this stays a pure function: what
+// debug.ReadBuildInfo actually answers is a property of how the calling
+// binary was built, which a test cannot choose.
+func resolveVersion(embedded, module string) string {
 	if embedded != "" {
 		return strings.TrimPrefix(embedded, "v")
 	}
-	// The module version for `go install …@vX.Y.Z`, and either (devel) or
-	// a VCS-stamped pseudo-version for a local `go build`.
-	if info, ok := buildInfo(); ok && info.Main.Version != "" {
-		return strings.TrimPrefix(info.Main.Version, "v")
+	if module != "" {
+		return strings.TrimPrefix(module, "v")
 	}
 	return "unknown"
 }

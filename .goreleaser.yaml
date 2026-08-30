@@ -18,7 +18,10 @@ builds:
     ldflags:
       # -X is the only way the version reaches the binary; internal/cmd
       # resolves it, and its fallback is what a go install build reports.
-      - -s -w -X github.com/178inaba/rdsh/internal/cmd.version={{.Version}}
+      # The module path is templated so the line is the same in the sibling
+      # CLIs, but the package after it is a plain string the linker
+      # resolves: move internal/cmd and the release quietly falls back.
+      - -s -w -X {{ .ModulePath }}/internal/cmd.version={{ .Version }}
 
 archives:
   - formats: [tar.gz]
@@ -27,14 +30,15 @@ archives:
         formats: [zip]
 
 checksum:
-  # Not the default {{ .ProjectName }}_{{ .Version }}_checksums.txt: the
-  # name is referred to by the README and by the attestation step, so it
-  # must not move with the version.
+  # Not the default {{ .ProjectName }}_{{ .Version }}_checksums.txt: a name
+  # that moves with the version cannot be linked to or scripted against,
+  # and the build provenance being added next attests through this file.
   name_template: checksums.txt
 
+# The cask is named after the project, which is where its binary name comes
+# from too.
 homebrew_casks:
-  - name: rdsh
-    repository:
+  - repository:
       owner: 178inaba
       name: homebrew-tap
       # The default GITHUB_TOKEN cannot write to another repository, so the
@@ -50,5 +54,5 @@ homebrew_casks:
         # to run what curl downloaded until the quarantine flag is off.
         install: |
           if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/rdsh"]
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/{{ .ProjectName }}"]
           end

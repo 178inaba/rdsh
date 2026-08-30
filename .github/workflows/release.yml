@@ -43,14 +43,20 @@ jobs:
           # are shared with the sibling CLIs.
           app-id: ${{ vars.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: 178inaba
-          # The tap is included because GoReleaser writes the cask into it.
-          repositories: rdsh,homebrew-tap
+          # Read from the context rather than spelled out, so this file can
+          # be copied to the sibling CLIs unedited. The tap is named because
+          # GoReleaser writes the cask into it.
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }},homebrew-tap
       - uses: Songmu/tagpr@v1
         id: tagpr
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+      # Gated like the step it is here for: most pushes to main only
+      # refresh the release PR, and installing a toolchain for a step that
+      # will not run costs a runner minute every time.
       - uses: actions/setup-go@v7
+        if: steps.tagpr.outputs.tag != ''
         with:
           go-version-file: go.mod
       # In the same job as tagpr on purpose: a tag pushed with a token from

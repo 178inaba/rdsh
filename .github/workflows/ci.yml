@@ -44,9 +44,10 @@ jobs:
           version=${image##*:}
           [[ "$version" == v* ]] || { echo "::error::could not read the golangci-lint version from compose.yaml (got '$version')"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      # So a broken .goreleaser.yaml fails on the PR rather than at release
-      # time, when the tag has already been pushed. Pinned to the same major
-      # release.yml runs, so what is checked here is what will build.
+      # So a .goreleaser.yaml the release major would reject fails on the PR
+      # rather than after the tag has been pushed. It validates the
+      # configuration and nothing else — a cross-compile failure or an
+      # ldflags symbol that no longer resolves still gets through.
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: '~> v2'
