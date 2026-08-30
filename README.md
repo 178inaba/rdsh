@@ -24,6 +24,17 @@ go install github.com/178inaba/rdsh@latest
 
 `rdsh --version` reports which build you ended up with.
 
+### Verify a download
+
+After downloading an archive:
+
+```sh
+gh attestation verify <downloaded archive> --repo 178inaba/rdsh
+```
+
+A pass proves the archive was built by this repository's release workflow from
+the tagged commit, and has not been altered since.
+
 ## Setup
 
 One-time interactive setup — the key is verified before saving:
