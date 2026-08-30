@@ -14,8 +14,7 @@ var version string
 
 // moduleVersion reports the version the toolchain recorded: the module
 // version for `go install …@vX.Y.Z`, and either (devel) or a VCS-stamped
-// pseudo-version for a local `go build`. Empty when there is no build
-// information to read.
+// pseudo-version for a local `go build`.
 func moduleVersion() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {

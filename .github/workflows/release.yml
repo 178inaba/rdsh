@@ -51,8 +51,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
       # Gated like the step it is here for: most pushes to main only
-      # refresh the release PR, and installing a toolchain for a step that
-      # will not run costs a runner minute every time.
+      # refresh the release PR and never reach GoReleaser.
       - uses: actions/setup-go@v7
         if: steps.tagpr.outputs.tag != ''
         with:

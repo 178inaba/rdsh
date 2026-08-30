@@ -1,9 +1,7 @@
 version: 2
 
-# Set rather than inferred: GoReleaser falls back to the checkout directory
-# name when it cannot read one from the remote, and that name is not always
-# the repository's (a linked worktree is named after its branch). It is what
-# the archives, the checksums and the cask binary are named after.
+# Set rather than inferred, because GoReleaser's fallback is the checkout
+# directory name and a linked worktree is named after its branch.
 project_name: rdsh
 
 builds:
@@ -31,8 +29,7 @@ checksum:
   # and the build provenance being added next attests through this file.
   name_template: checksums.txt
 
-# The cask is named after the project, which is where its binary name comes
-# from too.
+# No name: the cask takes the project's, and so does its binary.
 homebrew_casks:
   - repository:
       owner: 178inaba
