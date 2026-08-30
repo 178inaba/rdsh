@@ -8,8 +8,10 @@ on:
       - main
 
 # Not keyed on the ref, which is always main here. Cancelling is wrong for
-# this workflow — an in-flight run may be halfway through publishing — so
-# a second push waits instead.
+# this workflow — an in-flight run may be halfway through publishing — so a
+# second push queues behind it instead. A third supersedes the queued one,
+# which costs nothing: tagpr tags only when HEAD is the release PR's merge
+# commit, so a superseded run leaves that PR open to be merged again.
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
