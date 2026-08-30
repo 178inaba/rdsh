@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -49,6 +50,10 @@ func newRootCmd() (*cobra.Command, *helpReport) {
 	cmd := &cobra.Command{
 		Use:   "rdsh",
 		Short: "Run ad-hoc SQL and manage saved queries on Redash",
+		// Setting this is what registers --version, which cobra answers
+		// with `rdsh version X.Y.Z` on stdout. It also takes -v, which
+		// nothing else here claims.
+		Version: resolveVersion(version, debug.ReadBuildInfo),
 		// Errors are printed once in Execute; the default behavior would
 		// print usage and the error again on every runtime failure, which
 		// is noise for the primary (agent) consumer.
