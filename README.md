@@ -6,9 +6,23 @@ A CLI that runs ad-hoc SQL on [Redash](https://redash.io/) and manages saved que
 
 ## Install
 
+On macOS, with Homebrew:
+
+```sh
+brew install 178inaba/tap/rdsh
+```
+
+Anywhere else, download the archive for your operating system and
+architecture from the [Releases page](https://github.com/178inaba/rdsh/releases),
+unpack it and put `rdsh` on your `PATH`.
+
+With a Go toolchain, from source:
+
 ```sh
 go install github.com/178inaba/rdsh@latest
 ```
+
+`rdsh --version` reports which build you ended up with.
 
 ## Setup
 
