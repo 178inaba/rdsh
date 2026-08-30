@@ -1,0 +1,72 @@
+name: Release
+
+# Every push to main, not the tag: tagpr keeps a release PR up to date on
+# each one and creates the tag when that PR is merged.
+on:
+  push:
+    branches:
+      - main
+
+# Not keyed on the ref, which is always main here. Cancelling is wrong for
+# this workflow — an in-flight run may be halfway through publishing — so a
+# second push queues behind it instead.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+# Both steps below authenticate as the GitHub App, so the workflow's own
+# token needs no more than the checkout.
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # tagpr compares the release branch against the last tag.
+          fetch-depth: 0
+          # tagpr leaves the credentials checkout persists in place rather
+          # than replacing them, so without this its pushes would be made
+          # with the default GITHUB_TOKEN — and a release PR whose branch
+          # GITHUB_TOKEN pushed gets no CI run until a maintainer approves
+          # it in the merge box.
+          persist-credentials: false
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          # app-id is a legacy alias for client-id and warns as one; it
+          # stays because the App and the APP_ID variable already exist and
+          # are shared with the sibling CLIs.
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          # Read from the context rather than spelled out, so this file can
+          # be copied to the sibling CLIs unedited.
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }},homebrew-tap
+      - uses: Songmu/tagpr@v1
+        id: tagpr
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+      # Gated like the step it is here for: most pushes to main only
+      # refresh the release PR and never reach GoReleaser.
+      - uses: actions/setup-go@v7
+        if: steps.tagpr.outputs.tag != ''
+        with:
+          go-version-file: go.mod
+      # In the same job as tagpr on purpose: a tag pushed with a token from
+      # a workflow may not start a second workflow reliably, and gating on
+      # the tag output avoids the question entirely.
+      #
+      # It deliberately does not wait for CI on this commit: the merge
+      # commit of the release PR is what tagpr tags, and that commit was
+      # already tested on the PR itself.
+      - uses: goreleaser/goreleaser-action@v7
+        if: steps.tagpr.outputs.tag != ''
+        with:
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}

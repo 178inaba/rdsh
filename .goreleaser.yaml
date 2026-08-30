@@ -1,0 +1,51 @@
+version: 2
+
+# Set rather than inferred, because GoReleaser's fallback is the checkout
+# directory name and a linked worktree is named after its branch.
+project_name: rdsh
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    # Enumerated rather than inherited, which is what drops 386 from
+    # GoReleaser's default matrix.
+    goarch: [amd64, arm64]
+    ldflags:
+      # The module path is templated so the line is the same in the sibling
+      # CLIs, but the package after it is a plain string the linker
+      # resolves: move internal/cmd and the release quietly falls back.
+      - -s -w -X {{ .ModulePath }}/internal/cmd.version={{ .Version }}
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  # Not the default {{ .ProjectName }}_{{ .Version }}_checksums.txt: a name
+  # that moves with the version cannot be linked to or scripted against,
+  # and the build provenance being added next attests through this file.
+  name_template: checksums.txt
+
+# No name: the cask takes the project's, and so does its binary.
+homebrew_casks:
+  - repository:
+      owner: 178inaba
+      name: homebrew-tap
+      # The default GITHUB_TOKEN cannot write to another repository, so the
+      # workflow passes a GitHub App token that covers the tap as well.
+      token: "{{ .Env.GITHUB_TOKEN }}"
+    homepage: https://github.com/178inaba/rdsh
+    # Kept byte-identical to the description in .claude-plugin/plugin.json;
+    # see the synced-surface rule in CLAUDE.md.
+    description: "Run ad-hoc SQL and manage saved queries on Redash from the command line: one command per round trip, built for AI coding agents."
+    hooks:
+      post:
+        # The binary is neither signed nor notarized, so Gatekeeper refuses
+        # to run what curl downloaded until the quarantine flag is off.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/{{ .ProjectName }}"]
+          end

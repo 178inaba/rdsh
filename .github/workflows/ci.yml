@@ -44,6 +44,14 @@ jobs:
           version=${image##*:}
           [[ "$version" == v* ]] || { echo "::error::could not read the golangci-lint version from compose.yaml (got '$version')"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      # So a .goreleaser.yaml the release major would reject fails on the PR
+      # rather than after the tag has been pushed. It validates the
+      # configuration and nothing else — a cross-compile failure or an
+      # ldflags symbol that no longer resolves still gets through.
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: '~> v2'
+          args: check
       # Required by golangci-lint-action, and the Go problem matcher it
       # registers is what turns findings into inline PR annotations.
       - uses: actions/setup-go@v7
