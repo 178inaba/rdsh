@@ -8,16 +8,12 @@ project_name: rdsh
 
 builds:
   - env:
-      # rdsh links nothing native, and a static binary is what makes the
-      # archives runnable on any distribution.
       - CGO_ENABLED=0
     goos: [darwin, linux, windows]
     # Enumerated rather than inherited, which is what drops 386 from
     # GoReleaser's default matrix.
     goarch: [amd64, arm64]
     ldflags:
-      # -X is the only way the version reaches the binary; internal/cmd
-      # resolves it, and its fallback is what a go install build reports.
       # The module path is templated so the line is the same in the sibling
       # CLIs, but the package after it is a plain string the linker
       # resolves: move internal/cmd and the release quietly falls back.

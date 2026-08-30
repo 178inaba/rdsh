@@ -9,9 +9,7 @@ on:
 
 # Not keyed on the ref, which is always main here. Cancelling is wrong for
 # this workflow — an in-flight run may be halfway through publishing — so a
-# second push queues behind it instead. A third supersedes the queued one,
-# which costs nothing: tagpr tags only when HEAD is the release PR's merge
-# commit, so a superseded run leaves that PR open to be merged again.
+# second push queues behind it instead.
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
@@ -28,8 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # tagpr compares the release branch against the last tag, and
-          # GoReleaser reads the tag and the commit log.
+          # tagpr compares the release branch against the last tag.
           fetch-depth: 0
           # tagpr leaves the credentials checkout persists in place rather
           # than replacing them, so without this its pushes would be made
@@ -46,8 +43,7 @@ jobs:
           app-id: ${{ vars.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           # Read from the context rather than spelled out, so this file can
-          # be copied to the sibling CLIs unedited. The tap is named because
-          # GoReleaser writes the cask into it.
+          # be copied to the sibling CLIs unedited.
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }},homebrew-tap
       - uses: Songmu/tagpr@v1
