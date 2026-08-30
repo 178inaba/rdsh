@@ -31,5 +31,8 @@ go.work.sum
 # .idea/
 # .vscode/
 
+# GoReleaser build output
+dist/
+
 # Claude Code linked worktrees
 .claude/worktrees/

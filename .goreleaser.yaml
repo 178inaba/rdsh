@@ -1,0 +1,54 @@
+version: 2
+
+# Set rather than inferred: GoReleaser falls back to the checkout directory
+# name when it cannot read one from the remote, and that name is not always
+# the repository's (a linked worktree is named after its branch). It is what
+# the archives, the checksums and the cask binary are named after.
+project_name: rdsh
+
+builds:
+  - env:
+      # rdsh links nothing native, and a static binary is what makes the
+      # archives runnable on any distribution.
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    # Enumerated rather than inherited, which is what drops 386 from
+    # GoReleaser's default matrix.
+    goarch: [amd64, arm64]
+    ldflags:
+      # -X is the only way the version reaches the binary; internal/cmd
+      # resolves it, and its fallback is what a go install build reports.
+      - -s -w -X github.com/178inaba/rdsh/internal/cmd.version={{.Version}}
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  # Not the default {{ .ProjectName }}_{{ .Version }}_checksums.txt: the
+  # name is referred to by the README and by the attestation step, so it
+  # must not move with the version.
+  name_template: checksums.txt
+
+homebrew_casks:
+  - name: rdsh
+    repository:
+      owner: 178inaba
+      name: homebrew-tap
+      # The default GITHUB_TOKEN cannot write to another repository, so the
+      # workflow passes a GitHub App token that covers the tap as well.
+      token: "{{ .Env.GITHUB_TOKEN }}"
+    homepage: https://github.com/178inaba/rdsh
+    # Kept byte-identical to the description in .claude-plugin/plugin.json;
+    # see the synced-surface rule in CLAUDE.md.
+    description: "Run ad-hoc SQL and manage saved queries on Redash from the command line: one command per round trip, built for AI coding agents."
+    hooks:
+      post:
+        # The binary is neither signed nor notarized, so Gatekeeper refuses
+        # to run what curl downloaded until the quarantine flag is off.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/rdsh"]
+          end

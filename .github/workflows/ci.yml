@@ -44,6 +44,13 @@ jobs:
           version=${image##*:}
           [[ "$version" == v* ]] || { echo "::error::could not read the golangci-lint version from compose.yaml (got '$version')"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      # So a broken .goreleaser.yaml fails on the PR rather than at release
+      # time, when the tag has already been pushed. Pinned to the same major
+      # release.yml runs, so what is checked here is what will build.
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: '~> v2'
+          args: check
       # Required by golangci-lint-action, and the Go problem matcher it
       # registers is what turns findings into inline PR annotations.
       - uses: actions/setup-go@v7
