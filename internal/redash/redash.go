@@ -266,8 +266,12 @@ func (c *Client) RunQuery(ctx context.Context, query string, dataSourceID int) (
 // taken over.
 //
 // parameters supplies a value for every placeholder the query has; one left
-// uncovered fails the execution on the server rather than here.
-func (c *Client) RefreshQuery(ctx context.Context, id int, parameters map[string]any) (*QueryResult, error) {
+// uncovered fails the execution on the server rather than here. Each is the
+// JSON to send for that placeholder, the same spelling QueryParameter.Value
+// holds, so a stored default travels back as the text its hash was taken
+// over rather than through a Go type that might reformat it.
+func (c *Client) RefreshQuery(ctx context.Context, id int,
+	parameters map[string]jsontext.Value) (*QueryResult, error) {
 	job, err := c.submitSavedQuery(ctx, id, parameters)
 	if err != nil {
 		return nil, err
@@ -352,11 +356,12 @@ func (c *Client) submitQuery(ctx context.Context, query string, dataSourceID int
 
 // submitSavedQuery asks the server to execute the saved query with the
 // given parameter values.
-func (c *Client) submitSavedQuery(ctx context.Context, id int, parameters map[string]any) (*Job, error) {
+func (c *Client) submitSavedQuery(ctx context.Context, id int,
+	parameters map[string]jsontext.Value) (*Job, error) {
 	if parameters == nil {
 		// The server reads the field with a default an explicit null
 		// defeats, and then fails on the null it got instead.
-		parameters = map[string]any{}
+		parameters = map[string]jsontext.Value{}
 	}
 	// apply_auto_limit is deliberately absent rather than false: left out,
 	// the server falls back to the query's own options.apply_auto_limit,
@@ -425,10 +430,18 @@ var cellOptions = json.JoinOptions(
 func (p *queryResultPayload) result() *QueryResult {
 	for _, row := range p.Data.Rows {
 		for column, cell := range row {
-			// Format rewrites the value in place; it can only fail on JSON
-			// that did not parse, which this already did.
-			if err := cell.Format(cellOptions); err == nil {
-				row[column] = cell
+			// Only these three kinds can come out different: cellOptions
+			// leaves number formatting alone, and a boolean or a null has
+			// one spelling. Skipping the rest matters because Format costs
+			// the same for a four-byte number as for a nested object, and a
+			// result is as many cells as it is rows times columns.
+			switch cell.Kind() {
+			case '"', '{', '[':
+				// Format rewrites the value in place; it can only fail on
+				// JSON that did not parse, which this already did.
+				if err := cell.Format(cellOptions); err == nil {
+					row[column] = cell
+				}
 			}
 		}
 	}

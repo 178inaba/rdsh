@@ -36,7 +36,7 @@ func TestWriteObjectEscapesLineSeparators(t *testing.T) {
 		}
 	}
 	// The raw characters must not survive alongside the escapes.
-	for _, unwanted := range []string{" ", " ", "<", ">", "&"} {
+	for _, unwanted := range []string{"\u2028", "\u2029", "<", ">", "&"} {
 		if strings.Contains(got, unwanted) {
 			t.Errorf("output = %q, want %q escaped", got, unwanted)
 		}

@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -72,7 +74,7 @@ func TestQueryUpdateRefusesAParameterTypeItCannotWrite(t *testing.T) {
 	plan["enumOptions"] = "free\nteam\nenterprise"
 	delete(plan, "regex")
 	writeOptions(t, id, options, version)
-	before := storedParameters(t, id)
+	before := storedParametersJSON(t, id)
 
 	got := runRdsh(t, "query", "update", strconv.Itoa(id), "--param-default", "plan=team")
 	got.assertExit(t, 1)
@@ -82,8 +84,8 @@ func TestQueryUpdateRefusesAParameterTypeItCannotWrite(t *testing.T) {
 
 	// The refusal is only worth anything if nothing was sent: a refusal that
 	// still saved the query would be the silent rewrite it exists to prevent.
-	if after := storedParameters(t, id); !reflect.DeepEqual(after, before) {
-		t.Errorf("options.parameters = %+v, want them left at %+v", after, before)
+	if after := storedParametersJSON(t, id); after != before {
+		t.Errorf("options.parameters = %s, want them left at %s", after, before)
 	}
 }
 
@@ -132,6 +134,25 @@ func storedParameters(t *testing.T, id int) []map[string]any {
 	t.Helper()
 	options, _ := storedOptions(t, id)
 	return parametersOf(t, options)
+}
+
+// storedParametersJSON is the definitions as the JSON Redash holds them,
+// read without decoding on the way. The assertions about what an update left
+// alone go through here rather than through storedParameters because a
+// decoded number is a float64: a default past 2^53 that rdsh had rewritten
+// would round to the same float64 as the one it replaced, and the comparison
+// meant to catch exactly that would pass.
+func storedParametersJSON(t *testing.T, id int) string {
+	t.Helper()
+	var query struct {
+		Options struct {
+			Parameters jsontext.Value `json:"parameters"`
+		} `json:"options"`
+	}
+	if err := json.Unmarshal(redashRaw(t, queryPath(id)), &query); err != nil {
+		t.Fatalf("reading query %d: %v", id, err)
+	}
+	return string(query.Options.Parameters)
 }
 
 // wantParameters is what createParametrizedQuery writes, with the one entry

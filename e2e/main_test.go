@@ -235,3 +235,30 @@ func getQuery(t *testing.T, id int) map[string]any {
 	t.Helper()
 	return redashDo(t, http.MethodGet, queryPath(id), nil)
 }
+
+// redashRaw is redashDo for the assertions that compare what Redash holds
+// byte for byte, where decoding first would be the thing that hides the
+// difference being looked for.
+func redashRaw(t *testing.T, path string) []byte {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, redashURL+path, nil)
+	if err != nil {
+		t.Fatalf("building the GET %s request: %v", path, err)
+	}
+	req.Header.Set("Authorization", "Key "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("GET %s: reading the response: %v", path, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		t.Fatalf("GET %s: HTTP %d: %s", path, resp.StatusCode, data)
+	}
+	return data
+}

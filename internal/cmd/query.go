@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"encoding/json/jsontext"
-	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -512,13 +511,6 @@ func runQueryList(cmd *cobra.Command, args []string, g *globalFlags, mine bool, 
 	return nil
 }
 
-// cell encodes a value this package composed itself into the raw JSON a
-// result row holds. The values are Go scalars, so encoding them cannot fail.
-func cell(v any) jsontext.Value {
-	encoded, _ := json.Marshal(v)
-	return encoded
-}
-
 // queryListResult shapes the listing as the row set internal/format
 // renders, so list shares one output contract with run rather than growing
 // a second renderer. The URL is built by the client, which is also what
@@ -529,14 +521,15 @@ func queryListResult(client *redash.Client, queries []redash.Query) *redash.Quer
 		Rows:    make([]map[string]jsontext.Value, len(queries)),
 	}
 	for i, q := range queries {
-		// A cell is raw JSON, so the values assembled here are encoded to
-		// reach it. Plain options are enough: how these bytes are escaped is
-		// decided again by the encoder that prints them.
+		// A cell is raw JSON, so the scalars assembled here are encoded to
+		// reach it. Plain options are enough: none of these is a string
+		// carrying an escape, an object whose members have an order, or a
+		// number whose text matters.
 		result.Rows[i] = map[string]jsontext.Value{
-			"id":       cell(q.ID),
-			"name":     cell(q.Name),
-			"is_draft": cell(q.IsDraft),
-			"url":      cell(client.QueryURL(q.ID)),
+			"id":       rawJSON(q.ID),
+			"name":     rawJSON(q.Name),
+			"is_draft": rawJSON(q.IsDraft),
+			"url":      rawJSON(client.QueryURL(q.ID)),
 		}
 	}
 	return result
@@ -839,8 +832,9 @@ func splitParamToken(flag, token string) (string, string, error) {
 // nothing about is sent as it is, since a query saved by `rdsh query
 // create` carries no parameter definitions at all and its placeholders are
 // reachable no other way.
-func mergeParameters(stored []redash.QueryParameter, overrides map[string]string) (map[string]any, bool) {
-	values := make(map[string]any, len(stored)+len(overrides))
+func mergeParameters(stored []redash.QueryParameter,
+	overrides map[string]string) (map[string]jsontext.Value, bool) {
+	values := make(map[string]jsontext.Value, len(stored)+len(overrides))
 	for _, p := range stored {
 		if noDefault(p.Value) {
 			continue
@@ -858,7 +852,7 @@ func mergeParameters(stored []redash.QueryParameter, overrides map[string]string
 		if current, ok := values[name]; ok && parameterText(current) == override {
 			continue
 		}
-		values[name] = override
+		values[name] = rawJSON(override)
 		matchesDefaults = false
 	}
 	return values, matchesDefaults
@@ -871,17 +865,13 @@ func mergeParameters(stored []redash.QueryParameter, overrides map[string]string
 // that is not a scalar at all — a date range is an object — never equals
 // one, which is what makes the notice fire for the parameter kinds --param
 // cannot express.
-func parameterText(value any) string {
-	raw, ok := value.(jsontext.Value)
-	if !ok {
-		return fmt.Sprint(value)
-	}
-	if raw.Kind() == '"' {
-		if unquoted, err := jsontext.AppendUnquote(nil, raw); err == nil {
+func parameterText(value jsontext.Value) string {
+	if value.Kind() == '"' {
+		if unquoted, err := jsontext.AppendUnquote(nil, value); err == nil {
 			return string(unquoted)
 		}
 	}
-	return string(raw)
+	return string(value)
 }
 
 // resolveQueryID reads the <id|url> argument the saved-query commands take:

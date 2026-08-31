@@ -54,10 +54,8 @@ type fakeRedash struct {
 	nullQueryOptions bool
 	createdQuery     map[string]any // body of POST /api/queries
 	updatedQuery     map[string]any // body of POST /api/queries/7
-	// updatedRaw is that same body before decoding. A round-trip test
-	// compares numbers, and decoding twice — once here without UseNumber
-	// for the tests that read plain values, once from these bytes with it —
-	// is what keeps a large integer readable as the text that was sent.
+	// updatedRaw is that same body before decoding, for the tests that
+	// compare the bytes sent rather than the values they carry.
 	updatedRaw   []byte
 	queryVersion int           // version served by GET /api/queries/7
 	updateStatus int           // HTTP status for POST /api/queries/7, default 200
@@ -604,8 +602,8 @@ func TestGetQueryNullOptions(t *testing.T) {
 // replaces options wholesale, so everything read has to come back byte for
 // byte unless the caller changed it. That covers keys rdsh has no field for
 // (apply_auto_limit, enumOptions), parameter types it cannot express (enum),
-// and a default too large for a float64 — which is what a decoding that
-// dropped UseNumber would silently round.
+// and a default too large for a float64, which survives because the value
+// is held as the digits it was written with rather than decoded.
 func TestQueryOptionsRoundTrip(t *testing.T) {
 	options := map[string]any{
 		"apply_auto_limit": true,
@@ -797,7 +795,7 @@ func TestRefreshQuery(t *testing.T) {
 	defer srv.Close()
 
 	got, err := newTestClient(srv, "k").RefreshQuery(t.Context(), 7,
-		map[string]any{"days": jsontext.Value(`7`), "team": "core"})
+		map[string]jsontext.Value{"days": jsontext.Value(`7`), "team": jsontext.Value(`"core"`)})
 	if err != nil {
 		t.Fatalf("RefreshQuery() error = %v", err)
 	}

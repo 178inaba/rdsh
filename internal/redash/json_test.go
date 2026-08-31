@@ -43,7 +43,7 @@ func TestGetQueryResultNormalisesRows(t *testing.T) {
 		"/api/query_results/42": `{"query_result":{"data":{
 			"columns":[{"name":"n"},{"name":"note"},{"name":"obj"},{"name":"nul"}],
 			"rows":[
-				{"n":9007199254740993,"note":"café","obj":{"z":1,"a":2},"nul":null},
+				{"n":9007199254740993,"note":"caf\u00e9","obj":{"z":1,"a":2},"nul":null},
 				{"n":2}
 			]}}}`,
 	})
@@ -91,7 +91,7 @@ func TestQueryOptionsKeepUnknownMembersVerbatim(t *testing.T) {
 		"/api/queries/7": `{"id":7,"options":{
 			"apply_auto_limit":true,
 			"deep":{"b":[{"c":"x<y"}]},
-			"esc":"日本",
+			"esc":"\u65e5\u672c",
 			"parameters":[
 				{"name":"id","type":"number","value":9007199254740993,"nested":{"z":1,"a":2}},
 				{"name":"since","type":"date","value":null}
@@ -108,7 +108,7 @@ func TestQueryOptionsKeepUnknownMembersVerbatim(t *testing.T) {
 		// Nested values and pre-escaped text are held as they arrived: rdsh
 		// does not interpret them, so it must not rewrite them either.
 		"deep": `{"b":[{"c":"x<y"}]}`,
-		"esc":  `"日本"`,
+		"esc":  `"\u65e5\u672c"`,
 	} {
 		if got := string(q.Options.Extra[key]); got != want {
 			t.Errorf("Extra[%q] = %s, want %s", key, got, want)

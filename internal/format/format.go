@@ -90,6 +90,9 @@ func writeSeparated(w io.Writer, comma rune, result *redash.QueryResult) error {
 // writeJSON emits an array of row objects — the shape fixed by the spec.
 // Column order and type metadata are intentionally not carried.
 func writeJSON(w io.Writer, result *redash.QueryResult) error {
+	// [] for a result with no rows, spelled here rather than left to the
+	// encoder's default so that the contract does not move if that default
+	// does.
 	rows := result.Rows
 	if rows == nil {
 		rows = []map[string]jsontext.Value{}
@@ -102,12 +105,11 @@ func writeJSON(w io.Writer, result *redash.QueryResult) error {
 // these is a requirement rather than a preference, and dropping any one of
 // them changes the output:
 //
-//   - EscapeForHTML escapes <, > and &.
-//   - EscapeForJS escapes U+2028 and U+2029.
-//   - PreserveRawStrings leaves an escape sequence inside a value that
-//     arrived as raw JSON — a visualization's stored options — spelled the
-//     way the server spelled it.
-//   - Deterministic puts the members of a Go map in a fixed order.
+// EscapeForHTML and EscapeForJS cover the characters a consumer evaluating
+// the output would trip over; PreserveRawStrings keeps a visualization's
+// stored options spelled the way Redash spelled them, since rdsh reads that
+// blob without interpreting it; Deterministic keeps two runs printing the
+// same result identically.
 //
 // Result rows arrive already normalised (see queryResultPayload.result in
 // the redash package), so what is left here is to hold that spelling rather

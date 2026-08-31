@@ -76,10 +76,11 @@ func TestWriteJSON(t *testing.T) {
 	}
 }
 
-// TestWriteNativeCellValues covers the rows a command assembles itself
-// rather than decoding from a result: their cells carry native Go values,
-// which must render as the same scalars a decoded row would.
-func TestWriteNativeCellValues(t *testing.T) {
+// TestWriteAssembledCellValues covers the rows a command assembles itself
+// rather than decoding from a result — the saved-query listing's. Its cells
+// are encoded from Go scalars rather than read off a warehouse, and have to
+// render as the same scalars a decoded row would.
+func TestWriteAssembledCellValues(t *testing.T) {
 	res := &redash.QueryResult{
 		Columns: []redash.Column{{Name: "id"}, {Name: "is_draft"}},
 		Rows:    []map[string]jsontext.Value{{"id": jsontext.Value(`7`), "is_draft": jsontext.Value(`true`)}},
