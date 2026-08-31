@@ -258,7 +258,7 @@ func TestAuthLoginInterruptedAtPromptSavesNothing(t *testing.T) {
 			before := readConfigFile(t)
 			srv := (&fakeServer{}).start(t)
 
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 
 			stdin := newInterruptedStdin(t, cancel, authLoginAnswers(srv.URL)[:tt.interruptAt]...)
@@ -292,7 +292,7 @@ func TestAuthLoginInterruptedWithFinalAnswerSavesNothing(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	srv := (&fakeServer{}).start(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	// Interrupt as the final answer is served, rather than in place of it.
@@ -327,7 +327,7 @@ func TestAuthLoginSignalAtPromptAborts(t *testing.T) {
 			// the test binary; Execute is deliberately not in the way,
 			// since it would answer by re-raising and killing this
 			// process. What that leaves observable is the prompt aborting.
-			ctx, stop := signal.NotifyContext(context.Background(), sig)
+			ctx, stop := signal.NotifyContext(t.Context(), sig)
 			defer stop()
 
 			stdin := newInterruptedStdin(t, func() {
@@ -366,7 +366,7 @@ func TestAuthLoginRejectsNonTTYStdin(t *testing.T) {
 		t.Fatalf("closing the write end of the pipe: %v", err)
 	}
 
-	out, err := runRdshWithStdin(context.Background(), t, r, "auth", "login")
+	out, err := runRdshWithStdin(t.Context(), t, r, "auth", "login")
 	if err == nil || !strings.Contains(err.Error(), "needs a terminal") {
 		t.Fatalf("error = %v, want the needs-a-terminal error", err)
 	}
@@ -518,7 +518,7 @@ func TestAuthLoginPromptsOutliveTheTimeout(t *testing.T) {
 	// data source prompt, which runs after it.
 	stdin := newScriptedStdin(t, authLoginAnswers(srv.URL), map[int]func(){2: dawdle, 3: dawdle})
 
-	out, err := runRdshWithStdin(context.Background(), t, stdin, "auth", "login", "--timeout", timeout.String())
+	out, err := runRdshWithStdin(t.Context(), t, stdin, "auth", "login", "--timeout", timeout.String())
 	if err != nil {
 		t.Fatalf("auth login error = %v (output: %s)", err, out)
 	}

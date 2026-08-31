@@ -430,7 +430,7 @@ func runRdsh(t *testing.T, srv *httptest.Server, stdin string, args ...string) (
 // arranged XDG_CONFIG_HOME and the env pair.
 func runRdshWithEnvSet(t *testing.T, stdin string, args ...string) (string, error) {
 	t.Helper()
-	return runRdshWithStdin(context.Background(), t, strings.NewReader(stdin), args...)
+	return runRdshWithStdin(t.Context(), t, strings.NewReader(stdin), args...)
 }
 
 // commandReturnTimeout bounds how long a test waits for a command to
@@ -459,7 +459,7 @@ func runRdshSplit(t *testing.T, srv *httptest.Server, args ...string) (string, s
 	setRdshEnv(t, t.TempDir(), srv)
 
 	var out, errOut bytes.Buffer
-	err := runRdshInto(context.Background(), t, strings.NewReader(""), &out, &errOut, args...)
+	err := runRdshInto(t.Context(), t, strings.NewReader(""), &out, &errOut, args...)
 	return out.String(), errOut.String(), err
 }
 
@@ -716,13 +716,13 @@ func TestTimeoutFlagRejectsNegative(t *testing.T) {
 // TestWithTimeout pins what --timeout 0 means: no deadline at all, rather
 // than one that has already expired.
 func TestWithTimeout(t *testing.T) {
-	ctx, cancel := withTimeout(context.Background(), 0)
+	ctx, cancel := withTimeout(t.Context(), 0)
 	defer cancel()
 	if deadline, ok := ctx.Deadline(); ok {
 		t.Errorf("a zero timeout set a deadline of %s, want none", deadline)
 	}
 
-	bounded, cancelBounded := withTimeout(context.Background(), time.Minute)
+	bounded, cancelBounded := withTimeout(t.Context(), time.Minute)
 	defer cancelBounded()
 	if _, ok := bounded.Deadline(); !ok {
 		t.Error("a positive timeout set no deadline")
