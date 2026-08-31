@@ -3,7 +3,6 @@
 package e2e
 
 import (
-	"encoding/json"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -143,8 +142,9 @@ func wantParameters(sinceTitle, sinceValue string) []map[string]any {
 		{"name": "since", "title": sinceTitle, "type": "date", "value": sinceValue},
 		// A number default is stored as JSON's number rather than as the text
 		// it was typed as, which is how the Redash UI writes one — and the
-		// query hashes to the same text either tool saved it.
-		{"name": "seats", "title": "seats", "type": "number", "value": json.Number("5")},
+		// query hashes to the same text either tool saved it. A JSON number
+		// decodes to a float64, which is what tells it from a string here.
+		{"name": "seats", "title": "seats", "type": "number", "value": float64(5)},
 		{"name": "plan", "title": "plan", "type": "text-pattern", "value": "free", "regex": planPattern},
 	}
 }

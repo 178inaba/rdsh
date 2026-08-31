@@ -2,7 +2,8 @@ package format_test
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"strings"
 	"testing"
 
@@ -16,9 +17,9 @@ import (
 func result() *redash.QueryResult {
 	return &redash.QueryResult{
 		Columns: []redash.Column{{Name: "id"}, {Name: "note"}, {Name: "amount"}},
-		Rows: []map[string]any{
-			{"id": json.Number("1"), "note": "hello, world", "amount": json.Number("12345678901234567890")},
-			{"id": json.Number("2"), "note": nil, "amount": json.Number("0.5")},
+		Rows: []map[string]jsontext.Value{
+			{"id": jsontext.Value(`1`), "note": jsontext.Value(`"hello, world"`), "amount": jsontext.Value(`12345678901234567890`)},
+			{"id": jsontext.Value(`2`), "note": jsontext.Value(`null`), "amount": jsontext.Value(`0.5`)},
 		},
 	}
 }
@@ -57,18 +58,18 @@ func TestWriteJSON(t *testing.T) {
 
 	// An array of row objects; null preserved; big integers not mangled
 	// into float64 scientific notation.
-	var rows []map[string]any
+	var rows []map[string]jsontext.Value
 	if err := json.Unmarshal(buf.Bytes(), &rows); err != nil {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
 	}
 	if len(rows) != 2 {
 		t.Fatalf("len(rows) = %d, want 2", len(rows))
 	}
-	if rows[0]["note"] != "hello, world" {
-		t.Errorf("rows[0].note = %v", rows[0]["note"])
+	if got := string(rows[0]["note"]); got != `"hello, world"` {
+		t.Errorf("rows[0].note = %s", got)
 	}
-	if v, present := rows[1]["note"]; !present || v != nil {
-		t.Errorf("rows[1].note = %v (present=%v), want explicit null", v, present)
+	if v, present := rows[1]["note"]; !present || string(v) != "null" {
+		t.Errorf("rows[1].note = %s (present=%v), want explicit null", v, present)
 	}
 	if !strings.Contains(buf.String(), "12345678901234567890") {
 		t.Errorf("big integer lost precision: %s", buf.String())
@@ -81,7 +82,7 @@ func TestWriteJSON(t *testing.T) {
 func TestWriteNativeCellValues(t *testing.T) {
 	res := &redash.QueryResult{
 		Columns: []redash.Column{{Name: "id"}, {Name: "is_draft"}},
-		Rows:    []map[string]any{{"id": 7, "is_draft": true}},
+		Rows:    []map[string]jsontext.Value{{"id": jsontext.Value(`7`), "is_draft": jsontext.Value(`true`)}},
 	}
 
 	var buf bytes.Buffer

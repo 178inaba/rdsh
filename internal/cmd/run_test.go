@@ -3,7 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -181,7 +181,7 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("POST /api/queries", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
-		if err := json.NewDecoder(r.Body).Decode(&f.created); err != nil {
+		if err := json.UnmarshalRead(r.Body, &f.created); err != nil {
 			t.Errorf("decode created query: %v", err)
 		}
 		f.mu.Unlock()
@@ -230,7 +230,7 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 	mux.HandleFunc(fmt.Sprintf("POST /api/queries/%d/results", savedQueryID),
 		func(w http.ResponseWriter, r *http.Request) {
 			f.mu.Lock()
-			if err := json.NewDecoder(r.Body).Decode(&f.refreshed); err != nil {
+			if err := json.UnmarshalRead(r.Body, &f.refreshed); err != nil {
 				t.Errorf("decode executed query: %v", err)
 			}
 			f.mu.Unlock()
@@ -268,7 +268,7 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 	mux.HandleFunc(fmt.Sprintf("POST /api/queries/%d", savedQueryID), func(w http.ResponseWriter, r *http.Request) {
 		f.reach(updateRequest)
 		f.mu.Lock()
-		if err := json.NewDecoder(r.Body).Decode(&f.updated); err != nil {
+		if err := json.UnmarshalRead(r.Body, &f.updated); err != nil {
 			f.mu.Unlock()
 			return
 		}
@@ -289,7 +289,7 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 	mux.HandleFunc("POST /api/visualizations", func(w http.ResponseWriter, r *http.Request) {
 		f.reach(createVizRequest)
 		f.mu.Lock()
-		if err := json.NewDecoder(r.Body).Decode(&f.createdViz); err != nil {
+		if err := json.UnmarshalRead(r.Body, &f.createdViz); err != nil {
 			t.Errorf("decode created visualization: %v", err)
 		}
 		f.mu.Unlock()
@@ -302,7 +302,7 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 	mux.HandleFunc(fmt.Sprintf("POST /api/visualizations/%d", savedVizID),
 		func(w http.ResponseWriter, r *http.Request) {
 			f.mu.Lock()
-			if err := json.NewDecoder(r.Body).Decode(&f.updatedViz); err != nil {
+			if err := json.UnmarshalRead(r.Body, &f.updatedViz); err != nil {
 				t.Errorf("decode updated visualization: %v", err)
 			}
 			f.mu.Unlock()
@@ -414,7 +414,7 @@ func (f *fakeServer) waitFor(t *testing.T, name string) {
 
 func mustJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(v); err != nil {
+	if err := json.MarshalWrite(w, v); err != nil {
 		panic(err)
 	}
 }

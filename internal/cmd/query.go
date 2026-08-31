@@ -1,7 +1,8 @@
 package cmd
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -511,6 +512,13 @@ func runQueryList(cmd *cobra.Command, args []string, g *globalFlags, mine bool, 
 	return nil
 }
 
+// cell encodes a value this package composed itself into the raw JSON a
+// result row holds. The values are Go scalars, so encoding them cannot fail.
+func cell(v any) jsontext.Value {
+	encoded, _ := json.Marshal(v)
+	return encoded
+}
+
 // queryListResult shapes the listing as the row set internal/format
 // renders, so list shares one output contract with run rather than growing
 // a second renderer. The URL is built by the client, which is also what
@@ -518,14 +526,17 @@ func runQueryList(cmd *cobra.Command, args []string, g *globalFlags, mine bool, 
 func queryListResult(client *redash.Client, queries []redash.Query) *redash.QueryResult {
 	result := &redash.QueryResult{
 		Columns: []redash.Column{{Name: "id"}, {Name: "name"}, {Name: "is_draft"}, {Name: "url"}},
-		Rows:    make([]map[string]any, len(queries)),
+		Rows:    make([]map[string]jsontext.Value, len(queries)),
 	}
 	for i, q := range queries {
-		result.Rows[i] = map[string]any{
-			"id":       q.ID,
-			"name":     q.Name,
-			"is_draft": q.IsDraft,
-			"url":      client.QueryURL(q.ID),
+		// A cell is raw JSON, so the values assembled here are encoded to
+		// reach it. Plain options are enough: how these bytes are escaped is
+		// decided again by the encoder that prints them.
+		result.Rows[i] = map[string]jsontext.Value{
+			"id":       cell(q.ID),
+			"name":     cell(q.Name),
+			"is_draft": cell(q.IsDraft),
+			"url":      cell(client.QueryURL(q.ID)),
 		}
 	}
 	return result
@@ -650,10 +661,10 @@ func writeQueryDetail(w io.Writer, q *redash.Query, url string) error {
 	// The keys are passed through exactly as they arrived, which is what
 	// makes the round trip lossless for the ones rdsh has no name for.
 	type queryVisualization struct {
-		ID      int                        `json:"id"`
-		Type    string                     `json:"type"`
-		Name    string                     `json:"name"`
-		Options map[string]json.RawMessage `json:"options"`
+		ID      int                       `json:"id"`
+		Type    string                    `json:"type"`
+		Name    string                    `json:"name"`
+		Options map[string]jsontext.Value `json:"options"`
 	}
 	// Empty rather than null for a query with no charts, so a caller can
 	// iterate it without a branch — the same reason the row output prints
@@ -665,7 +676,7 @@ func writeQueryDetail(w io.Writer, q *redash.Query, url string) error {
 		// start from.
 		options := v.Options
 		if options == nil {
-			options = map[string]json.RawMessage{}
+			options = map[string]jsontext.Value{}
 		}
 		visualizations = append(visualizations,
 			queryVisualization{ID: v.ID, Type: v.Type, Name: v.Name, Options: options})
@@ -831,7 +842,7 @@ func splitParamToken(flag, token string) (string, string, error) {
 func mergeParameters(stored []redash.QueryParameter, overrides map[string]string) (map[string]any, bool) {
 	values := make(map[string]any, len(stored)+len(overrides))
 	for _, p := range stored {
-		if p.Value == nil {
+		if noDefault(p.Value) {
 			continue
 		}
 		values[p.Name] = p.Value
@@ -854,12 +865,24 @@ func mergeParameters(stored []redash.QueryParameter, overrides map[string]string
 }
 
 // parameterText renders a stored default for comparison with a --param
-// value, which is always a string. Numbers arrive as json.Number and
-// compare by the text they were written with; a default that is not a
-// scalar at all — a date range is an object — never equals one, which is
-// what makes the notice fire for the parameter kinds --param cannot
-// express.
-func parameterText(value any) string { return fmt.Sprint(value) }
+// value, which is always a string. A string default is unquoted so that it
+// compares as the text a caller would type; every other kind compares by
+// its JSON, so a number matches the text it was written with and a default
+// that is not a scalar at all — a date range is an object — never equals
+// one, which is what makes the notice fire for the parameter kinds --param
+// cannot express.
+func parameterText(value any) string {
+	raw, ok := value.(jsontext.Value)
+	if !ok {
+		return fmt.Sprint(value)
+	}
+	if raw.Kind() == '"' {
+		if unquoted, err := jsontext.AppendUnquote(nil, raw); err == nil {
+			return string(unquoted)
+		}
+	}
+	return string(raw)
+}
 
 // resolveQueryID reads the <id|url> argument the saved-query commands take:
 // an all-digit value is an ID, anything else has to be a query URL on the

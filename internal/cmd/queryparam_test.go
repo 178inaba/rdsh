@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
 	"reflect"
 	"strings"
 	"testing"
@@ -243,8 +243,8 @@ func TestParamDefinitionsCreates(t *testing.T) {
 		t.Fatalf("paramDefinitions() error = %v", err)
 	}
 	want := []redash.QueryParameter{
-		{Name: "user_id", Title: "user_id", Type: "number", Value: json.Number("42")},
-		{Name: "team", Title: "team", Type: "text", Value: "core"},
+		{Name: "user_id", Title: "user_id", Type: "number", Value: jsontext.Value(`42`)},
+		{Name: "team", Title: "team", Type: "text", Value: jsontext.Value(`"core"`)},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("paramDefinitions() = %+v, want %+v", got, want)
@@ -256,8 +256,8 @@ func TestParamDefinitionsCreates(t *testing.T) {
 // title someone set in the UI, the type, the other definitions — survives.
 func TestParamDefinitionsMergesPartially(t *testing.T) {
 	existing := []redash.QueryParameter{
-		{Name: "since", Title: "Target date", Type: "date", Value: "2026-01-01"},
-		{Name: "team", Title: "Team", Type: "text", Value: "core"},
+		{Name: "since", Title: "Target date", Type: "date", Value: jsontext.Value(`"2026-01-01"`)},
+		{Name: "team", Title: "Team", Type: "text", Value: jsontext.Value(`"core"`)},
 	}
 	got, err := definitions(t, existing, "SELECT {{since}}, {{team}}", paramFlagValues{
 		defaults: []string{"since=2026-08-01"},
@@ -266,8 +266,8 @@ func TestParamDefinitionsMergesPartially(t *testing.T) {
 		t.Fatalf("paramDefinitions() error = %v", err)
 	}
 	want := []redash.QueryParameter{
-		{Name: "since", Title: "Target date", Type: "date", Value: "2026-08-01"},
-		{Name: "team", Title: "Team", Type: "text", Value: "core"},
+		{Name: "since", Title: "Target date", Type: "date", Value: jsontext.Value(`"2026-08-01"`)},
+		{Name: "team", Title: "Team", Type: "text", Value: jsontext.Value(`"core"`)},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("paramDefinitions() = %+v, want %+v", got, want)
@@ -278,7 +278,7 @@ func TestParamDefinitionsMergesPartially(t *testing.T) {
 // already holds where they are, so an update reads as an edit rather than as
 // a rewrite of the whole list.
 func TestParamDefinitionsAppendsAfterExisting(t *testing.T) {
-	existing := []redash.QueryParameter{{Name: "team", Title: "Team", Type: "text", Value: "core"}}
+	existing := []redash.QueryParameter{{Name: "team", Title: "Team", Type: "text", Value: jsontext.Value(`"core"`)}}
 	got, err := definitions(t, existing, "SELECT {{team}}, {{days}}", paramFlagValues{
 		defaults: []string{"days=7"},
 		types:    []string{"days=number"},
@@ -287,8 +287,8 @@ func TestParamDefinitionsAppendsAfterExisting(t *testing.T) {
 		t.Fatalf("paramDefinitions() error = %v", err)
 	}
 	want := []redash.QueryParameter{
-		{Name: "team", Title: "Team", Type: "text", Value: "core"},
-		{Name: "days", Title: "days", Type: "number", Value: json.Number("7")},
+		{Name: "team", Title: "Team", Type: "text", Value: jsontext.Value(`"core"`)},
+		{Name: "days", Title: "days", Type: "number", Value: jsontext.Value(`7`)},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("paramDefinitions() = %+v, want %+v", got, want)
@@ -299,7 +299,7 @@ func TestParamDefinitionsAppendsAfterExisting(t *testing.T) {
 // carries: the pattern only means anything on a text-pattern parameter, so
 // setting one sets the type with it.
 func TestParamDefinitionsRegexPromotesType(t *testing.T) {
-	existing := []redash.QueryParameter{{Name: "code", Title: "Code", Type: "text", Value: "AB12"}}
+	existing := []redash.QueryParameter{{Name: "code", Title: "Code", Type: "text", Value: jsontext.Value(`"AB12"`)}}
 	got, err := definitions(t, existing, "SELECT {{code}}", paramFlagValues{
 		regexes: []string{"code=[A-Z]{2}[0-9]{2}"},
 	})
@@ -307,7 +307,7 @@ func TestParamDefinitionsRegexPromotesType(t *testing.T) {
 		t.Fatalf("paramDefinitions() error = %v", err)
 	}
 	want := []redash.QueryParameter{
-		{Name: "code", Title: "Code", Type: "text-pattern", Value: "AB12", Regex: "[A-Z]{2}[0-9]{2}"},
+		{Name: "code", Title: "Code", Type: "text-pattern", Value: jsontext.Value(`"AB12"`), Regex: "[A-Z]{2}[0-9]{2}"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("paramDefinitions() = %+v, want %+v", got, want)
@@ -319,7 +319,7 @@ func TestParamDefinitionsRegexPromotesType(t *testing.T) {
 // --param-type text-pattern valid on its own.
 func TestParamDefinitionsTypeOnlyUsesTheStoredRegex(t *testing.T) {
 	existing := []redash.QueryParameter{
-		{Name: "code", Title: "Code", Type: "text", Value: "AB12", Regex: "[A-Z]{2}[0-9]{2}"},
+		{Name: "code", Title: "Code", Type: "text", Value: jsontext.Value(`"AB12"`), Regex: "[A-Z]{2}[0-9]{2}"},
 	}
 	got, err := definitions(t, existing, "SELECT {{code}}", paramFlagValues{
 		types: []string{"code=text-pattern"},
@@ -344,18 +344,18 @@ func TestParamDefinitionsRevalidatesStoredValue(t *testing.T) {
 	}{
 		{
 			name:     "stored text is not a number",
-			existing: []redash.QueryParameter{{Name: "n", Type: "text", Value: "abc"}},
+			existing: []redash.QueryParameter{{Name: "n", Type: "text", Value: jsontext.Value(`"abc"`)}},
 			flags:    paramFlagValues{types: []string{"n=number"}},
 			wantErr:  true,
 		},
 		{
 			name:     "stored text is a number",
-			existing: []redash.QueryParameter{{Name: "n", Type: "text", Value: "42"}},
+			existing: []redash.QueryParameter{{Name: "n", Type: "text", Value: jsontext.Value(`"42"`)}},
 			flags:    paramFlagValues{types: []string{"n=number"}},
 		},
 		{
 			name:     "stored value does not match the new pattern",
-			existing: []redash.QueryParameter{{Name: "n", Type: "text", Value: "zz"}},
+			existing: []redash.QueryParameter{{Name: "n", Type: "text", Value: jsontext.Value(`"zz"`)}},
 			flags:    paramFlagValues{regexes: []string{"n=[0-9]+"}},
 			wantErr:  true,
 		},
@@ -377,49 +377,51 @@ func TestParamDefinitionsRevalidatesStoredValue(t *testing.T) {
 
 func TestParamDefinitionsValueTypes(t *testing.T) {
 	tests := []struct {
-		name      string
-		typ       string
-		value     string
-		regex     string
-		want      any
+		name  string
+		typ   string
+		value string
+		regex string
+		// want is the JSON the default is stored as, so a number keeps its
+		// text and a string carries its quotes.
+		want      string
 		wantErr   bool
 		wantWhere string
 	}{
-		{name: "number", typ: "number", value: "42", want: json.Number("42")},
-		{name: "negative number", typ: "number", value: "-1.5", want: json.Number("-1.5")},
+		{name: "number", typ: "number", value: "42", want: `42`},
+		{name: "negative number", typ: "number", value: "-1.5", want: `-1.5`},
 		{
 			name:  "integer too large for a float64",
 			typ:   "number",
 			value: "9007199254740993",
-			want:  json.Number("9007199254740993"),
+			want:  `9007199254740993`,
 		},
 		{name: "number that is not one", typ: "number", value: "abc", wantErr: true},
 		{name: "number spelled as an infinity", typ: "number", value: "inf", wantErr: true},
 		{name: "empty number", typ: "number", value: "", wantErr: true},
-		{name: "date", typ: "date", value: "2026-08-01", want: "2026-08-01"},
+		{name: "date", typ: "date", value: "2026-08-01", want: `"2026-08-01"`},
 		{name: "date in another layout", typ: "date", value: "2026/08/01", wantErr: true},
 		{name: "date with a time", typ: "date", value: "2026-08-01 09:00", wantErr: true},
 		{
 			name:  "datetime-local",
 			typ:   "datetime-local",
 			value: "2026-08-01 09:00",
-			want:  "2026-08-01 09:00",
+			want:  `"2026-08-01 09:00"`,
 		},
 		{name: "datetime-local without a time", typ: "datetime-local", value: "2026-08-01", wantErr: true},
 		{
 			name:  "datetime-with-seconds",
 			typ:   "datetime-with-seconds",
 			value: "2026-08-01 09:00:30",
-			want:  "2026-08-01 09:00:30",
+			want:  `"2026-08-01 09:00:30"`,
 		},
-		{name: "text takes anything", typ: "text", value: "a b, c", want: "a b, c"},
-		{name: "empty text is a value", typ: "text", value: "", want: ""},
+		{name: "text takes anything", typ: "text", value: "a b, c", want: `"a b, c"`},
+		{name: "empty text is a value", typ: "text", value: "", want: `""`},
 		{
 			name:  "text-pattern matching in full",
 			typ:   "text-pattern",
 			value: "AB12",
 			regex: "[A-Z]{2}[0-9]{2}",
-			want:  "AB12",
+			want:  `"AB12"`,
 		},
 		{
 			name:    "text-pattern matching only a part",
@@ -433,7 +435,7 @@ func TestParamDefinitionsValueTypes(t *testing.T) {
 			typ:   "text-pattern",
 			value: "b",
 			regex: "a|b",
-			want:  "b",
+			want:  `"b"`,
 		},
 	}
 	for _, tt := range tests {
@@ -455,8 +457,8 @@ func TestParamDefinitionsValueTypes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("paramDefinitions() error = %v", err)
 			}
-			if len(got) != 1 || got[0].Value != tt.want {
-				t.Errorf("paramDefinitions() = %+v, want the value %#v", got, tt.want)
+			if len(got) != 1 || string(got[0].Value) != tt.want {
+				t.Errorf("paramDefinitions() = %+v, want the value %s", got, tt.want)
 			}
 		})
 	}
@@ -496,14 +498,14 @@ func TestParamDefinitionsRejections(t *testing.T) {
 		},
 		{
 			name:     "existing definition rdsh cannot express",
-			existing: []redash.QueryParameter{{Name: "status", Type: "enum", Value: "core"}},
+			existing: []redash.QueryParameter{{Name: "status", Type: "enum", Value: jsontext.Value(`"core"`)}},
 			sql:      "SELECT {{status}}",
 			flags:    paramFlagValues{defaults: []string{"status=active"}},
 			wantErr:  "enum",
 		},
 		{
 			name:     "existing definition carrying no type",
-			existing: []redash.QueryParameter{{Name: "status", Value: "core"}},
+			existing: []redash.QueryParameter{{Name: "status", Value: jsontext.Value(`"core"`)}},
 			sql:      "SELECT {{status}}",
 			flags:    paramFlagValues{defaults: []string{"status=active"}},
 			wantErr:  "status",

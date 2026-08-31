@@ -14,7 +14,7 @@ package e2e
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -186,8 +186,9 @@ func queryID(t *testing.T, stdout string) int {
 // what is being asserted; driving rdsh's own work through it would defeat
 // the point of exec'ing the binary.
 //
-// Numbers are kept as json.Number so that a stored default written as a
-// number can be told from one written as a string.
+// A stored default written as a number decodes to a float64 and one written
+// as a string to a string, which is the distinction these tests assert on.
+// The values involved are small enough that the float64 holds them exactly.
 func redashDo(t *testing.T, method, path string, body any) map[string]any {
 	t.Helper()
 
@@ -218,10 +219,8 @@ func redashDo(t *testing.T, method, path string, body any) map[string]any {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		t.Fatalf("%s %s: HTTP %d: %s", method, path, resp.StatusCode, data)
 	}
-	decoder := json.NewDecoder(resp.Body)
-	decoder.UseNumber()
 	var out map[string]any
-	if err := decoder.Decode(&out); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &out); err != nil {
 		t.Fatalf("%s %s: decoding the response: %v", method, path, err)
 	}
 	return out
