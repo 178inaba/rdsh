@@ -1,5 +1,9 @@
 # Changelog
 
+## [v1.0.1](https://github.com/178inaba/rdsh/compare/v1.0.0...v1.0.1) - 2026-08-31
+
+- Attest the release archives with build provenance and document how to verify a download by @178inaba in https://github.com/178inaba/rdsh/pull/68
+
 ## [v0.0.1](https://github.com/178inaba/rdsh/commits/v0.0.1) - 2026-08-30
 
 - Implement rdsh MVP: ad-hoc SQL execution CLI for Redash by @178inaba in https://github.com/178inaba/rdsh/pull/3
