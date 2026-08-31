@@ -77,3 +77,14 @@ jobs:
         if: steps.tagpr.outputs.tag != ''
         with:
           subject-checksums: dist/checksums.txt
+      # Last on purpose: stable is what the plugin resolves to, so it must not
+      # move until the binaries the skill describes are published and attested.
+      # checkout left no credentials behind, so the App token goes in the URL.
+      - name: Move the stable tag
+        if: steps.tagpr.outputs.tag != ''
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ steps.tagpr.outputs.tag }}
+        run: |
+          git tag -f stable "$TAG"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" stable

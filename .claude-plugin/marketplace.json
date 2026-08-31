@@ -9,7 +9,11 @@
   "plugins": [
     {
       "name": "rdsh",
-      "source": "./",
+      "source": {
+        "source": "github",
+        "repo": "178inaba/rdsh",
+        "ref": "stable"
+      },
       "description": "Run ad-hoc SQL and manage saved queries on Redash from the command line: one command per round trip, built for AI coding agents."
     }
   ]
