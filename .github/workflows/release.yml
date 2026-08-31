@@ -14,10 +14,9 @@ concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
 
-# tagpr and GoReleaser authenticate as the GitHub App, so contents: read
-# covers no more than the checkout. The attestation step is the exception —
-# it uses the workflow's own token, and the writes below are what
-# actions/attest documents as required.
+# tagpr and GoReleaser authenticate as the GitHub App; the attestation step
+# does not, and the writes below are what actions/attest documents as
+# required.
 permissions:
   contents: read
   id-token: write
@@ -75,8 +74,8 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-      # Subjects come from the checksum file rather than the archives, so a
-      # change to the target matrix needs no edit here.
+      # Not a glob over the archives, so a change to the target matrix needs
+      # no edit here.
       - uses: actions/attest-build-provenance@v4
         if: steps.tagpr.outputs.tag != ''
         with:
