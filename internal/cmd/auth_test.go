@@ -262,7 +262,7 @@ func TestAuthLoginInterruptedAtPromptSavesNothing(t *testing.T) {
 			defer cancel()
 
 			stdin := newInterruptedStdin(t, cancel, authLoginAnswers(srv.URL)[:tt.interruptAt]...)
-			out, err := runRdshWithStdin(t, ctx, stdin, "auth", "login")
+			out, err := runRdshWithStdin(ctx, t, stdin, "auth", "login")
 			assertInterrupted(t, out, err)
 
 			// Pinning the whole output covers three things at once: the run
@@ -298,7 +298,7 @@ func TestAuthLoginInterruptedWithFinalAnswerSavesNothing(t *testing.T) {
 	// Interrupt as the final answer is served, rather than in place of it.
 	answers := authLoginAnswers(srv.URL)
 	stdin := newScriptedStdin(t, answers, map[int]func(){len(answers) - 1: cancel})
-	out, err := runRdshWithStdin(t, ctx, stdin, "auth", "login")
+	out, err := runRdshWithStdin(ctx, t, stdin, "auth", "login")
 	assertInterrupted(t, out, err)
 	assertConfigUnchanged(t, nil)
 }
@@ -336,7 +336,7 @@ func TestAuthLoginSignalAtPromptAborts(t *testing.T) {
 				}
 			}, authLoginAnswers(srv.URL)[:2]...)
 
-			out, err := runRdshWithStdin(t, ctx, stdin, "auth", "login")
+			out, err := runRdshWithStdin(ctx, t, stdin, "auth", "login")
 			assertInterrupted(t, out, err)
 			assertConfigUnchanged(t, nil)
 		})
@@ -366,7 +366,7 @@ func TestAuthLoginRejectsNonTTYStdin(t *testing.T) {
 		t.Fatalf("closing the write end of the pipe: %v", err)
 	}
 
-	out, err := runRdshWithStdin(t, context.Background(), r, "auth", "login")
+	out, err := runRdshWithStdin(context.Background(), t, r, "auth", "login")
 	if err == nil || !strings.Contains(err.Error(), "needs a terminal") {
 		t.Fatalf("error = %v, want the needs-a-terminal error", err)
 	}
@@ -518,7 +518,7 @@ func TestAuthLoginPromptsOutliveTheTimeout(t *testing.T) {
 	// data source prompt, which runs after it.
 	stdin := newScriptedStdin(t, authLoginAnswers(srv.URL), map[int]func(){2: dawdle, 3: dawdle})
 
-	out, err := runRdshWithStdin(t, context.Background(), stdin, "auth", "login", "--timeout", timeout.String())
+	out, err := runRdshWithStdin(context.Background(), t, stdin, "auth", "login", "--timeout", timeout.String())
 	if err != nil {
 		t.Fatalf("auth login error = %v (output: %s)", err, out)
 	}

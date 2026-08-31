@@ -109,7 +109,7 @@ func (f *fakeRedash) server() *httptest.Server {
 		}
 		writeJSON(w, map[string]any{"job": job})
 	})
-	mux.HandleFunc("DELETE /api/jobs/job-1", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("DELETE /api/jobs/job-1", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.cancelled = true
@@ -119,7 +119,7 @@ func (f *fakeRedash) server() *httptest.Server {
 		}
 		w.WriteHeader(status)
 	})
-	mux.HandleFunc("GET /api/query_results/42", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/query_results/42", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, map[string]any{"query_result": map[string]any{"data": map[string]any{
 			"columns": []map[string]any{
 				{"name": "id", "friendly_name": "ID", "type": "integer"},
@@ -131,7 +131,7 @@ func (f *fakeRedash) server() *httptest.Server {
 			},
 		}}})
 	})
-	mux.HandleFunc("GET /api/data_sources", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/data_sources", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, []map[string]any{
 			{"id": 1, "name": "warehouse"},
 			{"id": 2, "name": "logs"},
@@ -150,7 +150,7 @@ func (f *fakeRedash) server() *httptest.Server {
 			"data_source_id": f.createdQuery["data_source_id"], "is_draft": true,
 		})
 	})
-	mux.HandleFunc("GET /api/queries/7", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/queries/7", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		query := map[string]any{
@@ -216,7 +216,7 @@ func (f *fakeRedash) server() *httptest.Server {
 		}
 		writeJSON(w, map[string]any{"id": 9, "type": "CHART", "name": "chart"})
 	})
-	mux.HandleFunc("DELETE /api/visualizations/9", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("DELETE /api/visualizations/9", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.deletedViz = true

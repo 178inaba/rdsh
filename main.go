@@ -1,3 +1,4 @@
+// Command rdsh runs ad-hoc SQL and manages saved queries on Redash.
 package main
 
 import (

@@ -25,6 +25,7 @@ const (
 
 func (f Format) String() string { return string(f) }
 
+// Set accepts one of the formats above and rejects anything else.
 func (f *Format) Set(s string) error {
 	switch v := Format(s); v {
 	case CSV, TSV, JSON:
