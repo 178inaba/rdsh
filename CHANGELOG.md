@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.0.2](https://github.com/178inaba/rdsh/compare/v1.0.1...v1.0.2) - 2026-08-31
+
+- Mint the release token with client-id, not the deprecated app-id by @178inaba in https://github.com/178inaba/rdsh/pull/73
+- Attest with actions/attest directly instead of the attest-build-provenance wrapper by @178inaba in https://github.com/178inaba/rdsh/pull/75
+- Tie the plugin to releases with a stable tag and a tagpr-bumped version by @178inaba in https://github.com/178inaba/rdsh/pull/78
+
 ## [v1.0.1](https://github.com/178inaba/rdsh/compare/v1.0.0...v1.0.1) - 2026-08-31
 
 - Attest the release archives with build provenance and document how to verify a download by @178inaba in https://github.com/178inaba/rdsh/pull/68
