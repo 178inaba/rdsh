@@ -121,9 +121,9 @@ func runRdsh(t *testing.T, args ...string) result {
 
 	err := cmd.Run()
 	code := 0
-	var exit *exec.ExitError
+	exit, isExit := errors.AsType[*exec.ExitError](err)
 	switch {
-	case errors.As(err, &exit):
+	case isExit:
 		code = exit.ExitCode()
 	case err != nil:
 		t.Fatalf("running rdsh %v: %v", args, err)

@@ -572,8 +572,8 @@ func (c *Client) GetQuery(ctx context.Context, id int) (*Query, error) {
 func (c *Client) UpdateQuery(ctx context.Context, id int, u QueryUpdate) (*Query, error) {
 	var updated Query
 	if err := c.do(ctx, http.MethodPost, fmt.Sprintf("/api/queries/%d", id), u, &updated); err != nil {
-		var status *statusError
-		if u.Version != nil && errors.As(err, &status) && status.statusCode == http.StatusConflict {
+		status, isStatus := errors.AsType[*statusError](err)
+		if u.Version != nil && isStatus && status.statusCode == http.StatusConflict {
 			return nil, fmt.Errorf("%w: %v", ErrQueryVersionConflict, err)
 		}
 		return nil, err

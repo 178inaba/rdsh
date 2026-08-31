@@ -113,8 +113,7 @@ func (p *rdshProcess) wait(t *testing.T) syscall.WaitStatus {
 	defer timer.Stop()
 	select {
 	case err := <-p.waited:
-		var exitErr *exec.ExitError
-		if err != nil && !errors.As(err, &exitErr) {
+		if _, ok := errors.AsType[*exec.ExitError](err); err != nil && !ok {
 			t.Fatalf("waiting for rdsh: %v", err)
 		}
 		status, ok := p.cmd.ProcessState.Sys().(syscall.WaitStatus)
