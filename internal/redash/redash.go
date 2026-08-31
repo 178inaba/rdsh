@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -200,9 +201,7 @@ func (o *QueryOptions) UnmarshalJSON(data []byte) error {
 // the key they were read from.
 func (o QueryOptions) MarshalJSON() ([]byte, error) {
 	raw := make(map[string]json.RawMessage, len(o.Extra)+1)
-	for k, v := range o.Extra {
-		raw[k] = v
-	}
+	maps.Copy(raw, o.Extra)
 	if o.Parameters != nil {
 		params, err := json.Marshal(o.Parameters)
 		if err != nil {
@@ -268,9 +267,7 @@ func (p *QueryParameter) UnmarshalJSON(data []byte) error {
 // does, so it is left out too — but an empty one is not: see below.
 func (p QueryParameter) MarshalJSON() ([]byte, error) {
 	raw := make(map[string]json.RawMessage, len(p.Extra)+5)
-	for k, v := range p.Extra {
-		raw[k] = v
-	}
+	maps.Copy(raw, p.Extra)
 	put := func(key string, value any) error {
 		if value == nil {
 			return nil

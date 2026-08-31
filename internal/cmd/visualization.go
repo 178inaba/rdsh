@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strconv"
@@ -589,9 +590,7 @@ func columnFor(mapping map[string]string, role string) string {
 func patchChartOptions(stored map[string]json.RawMessage, seriesType, x string,
 	ys []string) (map[string]json.RawMessage, error) {
 	options := make(map[string]json.RawMessage, len(stored)+2)
-	for k, v := range stored {
-		options[k] = v
-	}
+	maps.Copy(options, stored)
 	if seriesType != "" {
 		seriesJSON, err := json.Marshal(seriesType)
 		if err != nil {
@@ -611,9 +610,7 @@ func patchChartOptions(stored map[string]json.RawMessage, seriesType, x string,
 		}
 	}
 	mapping := make(map[string]string, len(before)+len(ys)+1)
-	for column, role := range before {
-		mapping[column] = role
-	}
+	maps.Copy(mapping, before)
 	// The map is keyed by column name rather than by role, so moving an axis
 	// means dropping whatever held that role before. Replacing one axis
 	// leaves the other's columns exactly as they were.
