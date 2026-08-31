@@ -32,6 +32,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # A break in any of these reddens nothing — plugin updates just stop
+      # arriving, so it surfaces far later than what the checks below catch.
+      # The `// ""` and `type` defences are load-bearing: without them a
+      # manifest that lost its version, and a source reverted to the string
+      # "./", make jq throw and exit 5 rather than fail as the assertion.
+      - name: Assert the plugin distribution wiring
+        run: |
+          jq -e '(.version // "") | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' .claude-plugin/plugin.json > /dev/null \
+            || { echo "::error::.claude-plugin/plugin.json must declare a bare semver version, the form tagpr writes through versionFile"; exit 1; }
+          jq -e '.plugins[0] | has("version") | not' .claude-plugin/marketplace.json > /dev/null \
+            || { echo "::error::the .claude-plugin/marketplace.json plugin entry must not declare a version; Claude Code reads the one in plugin.json"; exit 1; }
+          jq -e '.plugins[0].source | type == "object" and .ref == "stable"' .claude-plugin/marketplace.json > /dev/null \
+            || { echo "::error::the .claude-plugin/marketplace.json plugin entry's source must be a source object pinned to ref stable, not a path"; exit 1; }
+          [ "$(git config -f .tagpr tagpr.versionFile)" = .claude-plugin/plugin.json ] \
+            || { echo "::error::.tagpr must set versionFile to .claude-plugin/plugin.json, or tagpr stops bumping the version that stable ships"; exit 1; }
       # golangci-lint-action resolves an empty tag — and a `latest` tag — to
       # whatever the newest release is, so a compose.yaml that lost its pin
       # would leave this job green and silently unpinned. Any other malformed
