@@ -1,5 +1,5 @@
 [tagpr]
 	releaseBranch = main
-	versionFile = -
+	versionFile = .claude-plugin/plugin.json
 	vPrefix = true
 	release = false
