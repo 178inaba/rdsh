@@ -16,6 +16,7 @@ linters:
     - errcheck
     - govet
     - ineffassign
+    - revive
     - staticcheck
     - unused
   settings:
@@ -28,6 +29,15 @@ linters:
         - fmt.Fprintln
         - os.Unsetenv
         - (io.ReadCloser).Close
+
+# The two defaults below hide findings rather than cap noise: golangci-lint
+# stops after three issues sharing one message and after fifty from one
+# linter, so eight identical unused-parameter reports arrive as three. The
+# enumerated set above is only worth enumerating if all of what it finds is
+# reported.
+issues:
+  max-same-issues: 0
+  max-issues-per-linter: 0
 
 # `golangci-lint run` reports a formatter's findings as ordinary issues, so the
 # existing Lint job and `docker compose run --rm lint` already fail on

@@ -109,7 +109,7 @@ func (f *fakeRedash) server() *httptest.Server {
 		}
 		writeJSON(w, map[string]any{"job": job})
 	})
-	mux.HandleFunc("DELETE /api/jobs/job-1", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("DELETE /api/jobs/job-1", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.cancelled = true
@@ -119,7 +119,7 @@ func (f *fakeRedash) server() *httptest.Server {
 		}
 		w.WriteHeader(status)
 	})
-	mux.HandleFunc("GET /api/query_results/42", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/query_results/42", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, map[string]any{"query_result": map[string]any{"data": map[string]any{
 			"columns": []map[string]any{
 				{"name": "id", "friendly_name": "ID", "type": "integer"},
@@ -131,7 +131,7 @@ func (f *fakeRedash) server() *httptest.Server {
 			},
 		}}})
 	})
-	mux.HandleFunc("GET /api/data_sources", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/data_sources", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, []map[string]any{
 			{"id": 1, "name": "warehouse"},
 			{"id": 2, "name": "logs"},
@@ -150,7 +150,7 @@ func (f *fakeRedash) server() *httptest.Server {
 			"data_source_id": f.createdQuery["data_source_id"], "is_draft": true,
 		})
 	})
-	mux.HandleFunc("GET /api/queries/7", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/queries/7", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		query := map[string]any{
@@ -216,7 +216,7 @@ func (f *fakeRedash) server() *httptest.Server {
 		}
 		writeJSON(w, map[string]any{"id": 9, "type": "CHART", "name": "chart"})
 	})
-	mux.HandleFunc("DELETE /api/visualizations/9", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("DELETE /api/visualizations/9", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.deletedViz = true
@@ -298,7 +298,7 @@ func TestRunQuerySuccess(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(srv, "k")
-	got, err := c.RunQuery(context.Background(), "SELECT 1", 5)
+	got, err := c.RunQuery(t.Context(), "SELECT 1", 5)
 	if err != nil {
 		t.Fatalf("RunQuery() error = %v", err)
 	}
@@ -342,7 +342,7 @@ func TestRunQueryRefusalCarriesItsMessage(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	_, err := newTestClient(srv, "k").RunQuery(context.Background(), "SELECT 1", 5)
+	_, err := newTestClient(srv, "k").RunQuery(t.Context(), "SELECT 1", 5)
 	if err == nil {
 		t.Fatal("RunQuery() error = nil, want the server's refusal")
 	}
@@ -356,7 +356,7 @@ func TestRunQueryJobFailure(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	_, err := newTestClient(srv, "k").RunQuery(context.Background(), "SELEC 1", 5)
+	_, err := newTestClient(srv, "k").RunQuery(t.Context(), "SELEC 1", 5)
 	if err == nil || !strings.Contains(err.Error(), "syntax error") {
 		t.Errorf("RunQuery() error = %v, want the job error surfaced", err)
 	}
@@ -367,7 +367,7 @@ func TestRunQueryJobCancelledServerSide(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	_, err := newTestClient(srv, "k").RunQuery(context.Background(), "SELECT 1", 5)
+	_, err := newTestClient(srv, "k").RunQuery(t.Context(), "SELECT 1", 5)
 	if err == nil || !strings.Contains(err.Error(), "cancel") {
 		t.Errorf("RunQuery() error = %v, want cancelled-job error", err)
 	}
@@ -378,7 +378,7 @@ func TestRunQueryContextExpiryCancelsJob(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
 	defer cancel()
 
 	_, err := newTestClient(srv, "k").RunQuery(ctx, "SELECT pg_sleep(600)", 5)
@@ -397,7 +397,7 @@ func TestRunQueryCancelFailureIsBestEffort(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
 	defer cancel()
 
 	_, err := newTestClient(srv, "k").RunQuery(ctx, "SELECT 1", 5)
@@ -411,7 +411,7 @@ func TestListDataSources(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	dss, err := newTestClient(srv, "k").ListDataSources(context.Background())
+	dss, err := newTestClient(srv, "k").ListDataSources(t.Context())
 	if err != nil {
 		t.Fatalf("ListDataSources() error = %v", err)
 	}
@@ -426,7 +426,7 @@ func TestNewClientTrimsTrailingSlash(t *testing.T) {
 	defer srv.Close()
 
 	c := redash.NewClient(srv.URL+"/", "good-key")
-	if err := c.GetSession(context.Background()); err != nil {
+	if err := c.GetSession(t.Context()); err != nil {
 		t.Errorf("GetSession() with trailing-slash base URL error = %v", err)
 	}
 }
@@ -436,11 +436,11 @@ func TestGetSession(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	if err := newTestClient(srv, "good-key").GetSession(context.Background()); err != nil {
+	if err := newTestClient(srv, "good-key").GetSession(t.Context()); err != nil {
 		t.Errorf("GetSession() with valid key error = %v", err)
 	}
 
-	err := newTestClient(srv, "bad-key").GetSession(context.Background())
+	err := newTestClient(srv, "bad-key").GetSession(t.Context())
 	if err == nil {
 		t.Fatal("GetSession() with invalid key: want error")
 	}
@@ -454,7 +454,7 @@ func TestCreateQuery(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	q, err := newTestClient(srv, "k").CreateQuery(context.Background(), redash.NewQuery{
+	q, err := newTestClient(srv, "k").CreateQuery(t.Context(), redash.NewQuery{
 		Name: "saved", Query: "SELECT 1", DataSourceID: 3, Description: "why it exists",
 	})
 	if err != nil {
@@ -480,7 +480,7 @@ func TestCreateQueryOmitsEmptyDescription(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	if _, err := newTestClient(srv, "k").CreateQuery(context.Background(), redash.NewQuery{
+	if _, err := newTestClient(srv, "k").CreateQuery(t.Context(), redash.NewQuery{
 		Name: "saved", Query: "SELECT 1", DataSourceID: 3,
 	}); err != nil {
 		t.Fatalf("CreateQuery() error = %v", err)
@@ -499,7 +499,7 @@ func TestUpdateQuery(t *testing.T) {
 	defer srv.Close()
 
 	draft := false
-	q, err := newTestClient(srv, "k").UpdateQuery(context.Background(), 7, redash.QueryUpdate{IsDraft: &draft})
+	q, err := newTestClient(srv, "k").UpdateQuery(t.Context(), 7, redash.QueryUpdate{IsDraft: &draft})
 	if err != nil {
 		t.Fatalf("UpdateQuery() error = %v", err)
 	}
@@ -519,7 +519,7 @@ func TestGetQuery(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	q, err := newTestClient(srv, "k").GetQuery(context.Background(), 7)
+	q, err := newTestClient(srv, "k").GetQuery(t.Context(), 7)
 	if err != nil {
 		t.Fatalf("GetQuery() error = %v", err)
 	}
@@ -545,7 +545,7 @@ func TestGetQueryOptions(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	q, err := newTestClient(srv, "k").GetQuery(context.Background(), 7)
+	q, err := newTestClient(srv, "k").GetQuery(t.Context(), 7)
 	if err != nil {
 		t.Fatalf("GetQuery() error = %v", err)
 	}
@@ -571,7 +571,7 @@ func TestGetQueryWithoutOptions(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	q, err := newTestClient(srv, "k").GetQuery(context.Background(), 7)
+	q, err := newTestClient(srv, "k").GetQuery(t.Context(), 7)
 	if err != nil {
 		t.Fatalf("GetQuery() error = %v", err)
 	}
@@ -589,7 +589,7 @@ func TestGetQueryNullOptions(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	q, err := newTestClient(srv, "k").GetQuery(context.Background(), 7)
+	q, err := newTestClient(srv, "k").GetQuery(t.Context(), 7)
 	if err != nil {
 		t.Fatalf("GetQuery() error = %v", err)
 	}
@@ -620,11 +620,11 @@ func TestQueryOptionsRoundTrip(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(srv, "k")
-	q, err := client.GetQuery(context.Background(), 7)
+	q, err := client.GetQuery(t.Context(), 7)
 	if err != nil {
 		t.Fatalf("GetQuery() error = %v", err)
 	}
-	if _, err := client.UpdateQuery(context.Background(), 7, redash.QueryUpdate{Options: &q.Options}); err != nil {
+	if _, err := client.UpdateQuery(t.Context(), 7, redash.QueryUpdate{Options: &q.Options}); err != nil {
 		t.Fatalf("UpdateQuery() error = %v", err)
 	}
 
@@ -653,11 +653,11 @@ func TestQueryOptionsNormalisesNullValue(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(srv, "k")
-	q, err := client.GetQuery(context.Background(), 7)
+	q, err := client.GetQuery(t.Context(), 7)
 	if err != nil {
 		t.Fatalf("GetQuery() error = %v", err)
 	}
-	if _, err := client.UpdateQuery(context.Background(), 7, redash.QueryUpdate{Options: &q.Options}); err != nil {
+	if _, err := client.UpdateQuery(t.Context(), 7, redash.QueryUpdate{Options: &q.Options}); err != nil {
 		t.Fatalf("UpdateQuery() error = %v", err)
 	}
 
@@ -703,7 +703,7 @@ func TestQueryOptionsOmitsEmptyKeys(t *testing.T) {
 	defer srv.Close()
 
 	options := redash.QueryOptions{Parameters: []redash.QueryParameter{{Name: "days"}}}
-	if _, err := newTestClient(srv, "k").UpdateQuery(context.Background(), 7,
+	if _, err := newTestClient(srv, "k").UpdateQuery(t.Context(), 7,
 		redash.QueryUpdate{Options: &options}); err != nil {
 		t.Fatalf("UpdateQuery() error = %v", err)
 	}
@@ -729,7 +729,7 @@ func TestQueryOptionsKeepsAnEmptyDefault(t *testing.T) {
 	options := redash.QueryOptions{Parameters: []redash.QueryParameter{
 		{Name: "note", Title: "note", Type: "text", Value: ""},
 	}}
-	if _, err := newTestClient(srv, "k").UpdateQuery(context.Background(), 7,
+	if _, err := newTestClient(srv, "k").UpdateQuery(t.Context(), 7,
 		redash.QueryUpdate{Options: &options}); err != nil {
 		t.Fatalf("UpdateQuery() error = %v", err)
 	}
@@ -753,7 +753,7 @@ func TestCreateQueryOptions(t *testing.T) {
 	options := redash.QueryOptions{Parameters: []redash.QueryParameter{
 		{Name: "days", Title: "days", Type: "number", Value: json.Number("7")},
 	}}
-	if _, err := newTestClient(srv, "k").CreateQuery(context.Background(), redash.NewQuery{
+	if _, err := newTestClient(srv, "k").CreateQuery(t.Context(), redash.NewQuery{
 		Name: "saved", Query: "SELECT {{days}}", DataSourceID: 3, Options: &options,
 	}); err != nil {
 		t.Fatalf("CreateQuery() error = %v", err)
@@ -777,7 +777,7 @@ func TestCreateQueryOmitsOptions(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	if _, err := newTestClient(srv, "k").CreateQuery(context.Background(), redash.NewQuery{
+	if _, err := newTestClient(srv, "k").CreateQuery(t.Context(), redash.NewQuery{
 		Name: "saved", Query: "SELECT 1", DataSourceID: 3,
 	}); err != nil {
 		t.Fatalf("CreateQuery() error = %v", err)
@@ -794,7 +794,7 @@ func TestRefreshQuery(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	got, err := newTestClient(srv, "k").RefreshQuery(context.Background(), 7,
+	got, err := newTestClient(srv, "k").RefreshQuery(t.Context(), 7,
 		map[string]any{"days": json.Number("7"), "team": "core"})
 	if err != nil {
 		t.Fatalf("RefreshQuery() error = %v", err)
@@ -833,7 +833,7 @@ func TestRefreshQueryWithoutParameters(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	if _, err := newTestClient(srv, "k").RefreshQuery(context.Background(), 7, nil); err != nil {
+	if _, err := newTestClient(srv, "k").RefreshQuery(t.Context(), 7, nil); err != nil {
 		t.Fatalf("RefreshQuery() error = %v", err)
 	}
 
@@ -856,7 +856,7 @@ func TestRefreshQueryContextExpiryCancelsJob(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
 	defer cancel()
 
 	_, err := newTestClient(srv, "k").RefreshQuery(ctx, 7, nil)
@@ -879,7 +879,7 @@ func TestUpdateQuerySendsVersion(t *testing.T) {
 	defer srv.Close()
 
 	name, version := "renamed", 4
-	if _, err := newTestClient(srv, "k").UpdateQuery(context.Background(), 7, redash.QueryUpdate{
+	if _, err := newTestClient(srv, "k").UpdateQuery(t.Context(), 7, redash.QueryUpdate{
 		Name: &name, Version: &version,
 	}); err != nil {
 		t.Fatalf("UpdateQuery() error = %v", err)
@@ -899,7 +899,7 @@ func TestUpdateQueryVersionConflict(t *testing.T) {
 	defer srv.Close()
 
 	version := 4
-	_, err := newTestClient(srv, "k").UpdateQuery(context.Background(), 7, redash.QueryUpdate{Version: &version})
+	_, err := newTestClient(srv, "k").UpdateQuery(t.Context(), 7, redash.QueryUpdate{Version: &version})
 	if !errors.Is(err, redash.ErrQueryVersionConflict) {
 		t.Fatalf("UpdateQuery() error = %v, want ErrQueryVersionConflict", err)
 	}
@@ -915,7 +915,7 @@ func TestUpdateQueryConflictWithoutVersionIsNotAConflict(t *testing.T) {
 	defer srv.Close()
 
 	draft := false
-	_, err := newTestClient(srv, "k").UpdateQuery(context.Background(), 7, redash.QueryUpdate{IsDraft: &draft})
+	_, err := newTestClient(srv, "k").UpdateQuery(t.Context(), 7, redash.QueryUpdate{IsDraft: &draft})
 	if err == nil {
 		t.Fatal("UpdateQuery() error = nil, want the refusal reported")
 	}
@@ -957,7 +957,7 @@ func TestListQueries(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	queries, count, err := newTestClient(srv, "k").ListQueries(context.Background(), redash.QueryListOptions{Limit: 30})
+	queries, count, err := newTestClient(srv, "k").ListQueries(t.Context(), redash.QueryListOptions{Limit: 30})
 	if err != nil {
 		t.Fatalf("ListQueries() error = %v", err)
 	}
@@ -992,7 +992,7 @@ func TestListQueriesWalksPages(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	queries, count, err := newTestClient(srv, "k").ListQueries(context.Background(), redash.QueryListOptions{Limit: 250})
+	queries, count, err := newTestClient(srv, "k").ListQueries(t.Context(), redash.QueryListOptions{Limit: 250})
 	if err != nil {
 		t.Fatalf("ListQueries() error = %v", err)
 	}
@@ -1024,7 +1024,7 @@ func TestListQueriesStopsAtCount(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	queries, count, err := newTestClient(srv, "k").ListQueries(context.Background(), redash.QueryListOptions{Limit: 250})
+	queries, count, err := newTestClient(srv, "k").ListQueries(t.Context(), redash.QueryListOptions{Limit: 250})
 	if err != nil {
 		t.Fatalf("ListQueries() error = %v", err)
 	}
@@ -1046,7 +1046,7 @@ func TestListQueriesLimitBoundsThePageSize(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	queries, count, err := newTestClient(srv, "k").ListQueries(context.Background(), redash.QueryListOptions{Limit: 5})
+	queries, count, err := newTestClient(srv, "k").ListQueries(t.Context(), redash.QueryListOptions{Limit: 5})
 	if err != nil {
 		t.Fatalf("ListQueries() error = %v", err)
 	}
@@ -1069,7 +1069,7 @@ func TestListQueriesSearch(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	if _, _, err := newTestClient(srv, "k").ListQueries(context.Background(), redash.QueryListOptions{
+	if _, _, err := newTestClient(srv, "k").ListQueries(t.Context(), redash.QueryListOptions{
 		Search: "signups", Limit: 30,
 	}); err != nil {
 		t.Fatalf("ListQueries() error = %v", err)
@@ -1090,7 +1090,7 @@ func TestListQueriesMine(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	if _, _, err := newTestClient(srv, "k").ListQueries(context.Background(), redash.QueryListOptions{
+	if _, _, err := newTestClient(srv, "k").ListQueries(t.Context(), redash.QueryListOptions{
 		Mine: true, Search: "signups", Limit: 30,
 	}); err != nil {
 		t.Fatalf("ListQueries() error = %v", err)
@@ -1114,7 +1114,7 @@ func TestListQueriesNoMatches(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	queries, count, err := newTestClient(srv, "k").ListQueries(context.Background(), redash.QueryListOptions{
+	queries, count, err := newTestClient(srv, "k").ListQueries(t.Context(), redash.QueryListOptions{
 		Search: "nothing matches this", Limit: 30,
 	})
 	if err != nil {
@@ -1134,7 +1134,7 @@ func TestGetQueryResultReadsTheStoredResult(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(srv, "k")
-	q, err := c.GetQuery(context.Background(), 7)
+	q, err := c.GetQuery(t.Context(), 7)
 	if err != nil {
 		t.Fatalf("GetQuery() error = %v", err)
 	}
@@ -1142,7 +1142,7 @@ func TestGetQueryResultReadsTheStoredResult(t *testing.T) {
 		t.Fatalf("LatestQueryDataID = %d, want 42", q.LatestQueryDataID)
 	}
 
-	result, err := c.GetQueryResult(context.Background(), q.LatestQueryDataID)
+	result, err := c.GetQueryResult(t.Context(), q.LatestQueryDataID)
 	if err != nil {
 		t.Fatalf("GetQueryResult() error = %v", err)
 	}
@@ -1159,7 +1159,7 @@ func TestGetQueryWithoutAResult(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	q, err := newTestClient(srv, "k").GetQuery(context.Background(), 7)
+	q, err := newTestClient(srv, "k").GetQuery(t.Context(), 7)
 	if err != nil {
 		t.Fatalf("GetQuery() error = %v", err)
 	}
@@ -1181,7 +1181,7 @@ func TestGetQueryReadsVisualizations(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	q, err := newTestClient(srv, "k").GetQuery(context.Background(), 7)
+	q, err := newTestClient(srv, "k").GetQuery(t.Context(), 7)
 	if err != nil {
 		t.Fatalf("GetQuery() error = %v", err)
 	}
@@ -1211,7 +1211,7 @@ func TestGetQueryWithoutVisualizations(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	q, err := newTestClient(srv, "k").GetQuery(context.Background(), 7)
+	q, err := newTestClient(srv, "k").GetQuery(t.Context(), 7)
 	if err != nil {
 		t.Fatalf("GetQuery() error = %v", err)
 	}
@@ -1225,7 +1225,7 @@ func TestCreateVisualization(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	created, err := newTestClient(srv, "k").CreateVisualization(context.Background(), redash.NewVisualization{
+	created, err := newTestClient(srv, "k").CreateVisualization(t.Context(), redash.NewVisualization{
 		QueryID: 7,
 		Type:    "CHART",
 		Name:    "daily",
@@ -1265,7 +1265,7 @@ func TestUpdateVisualizationSendsOnlyWhatChanged(t *testing.T) {
 	defer srv.Close()
 
 	name := "renamed"
-	if _, err := newTestClient(srv, "k").UpdateVisualization(context.Background(), 9,
+	if _, err := newTestClient(srv, "k").UpdateVisualization(t.Context(), 9,
 		redash.VisualizationUpdate{Name: &name}); err != nil {
 		t.Fatalf("UpdateVisualization() error = %v", err)
 	}
@@ -1287,7 +1287,7 @@ func TestDeleteVisualization(t *testing.T) {
 	srv := f.server()
 	defer srv.Close()
 
-	if err := newTestClient(srv, "k").DeleteVisualization(context.Background(), 9); err != nil {
+	if err := newTestClient(srv, "k").DeleteVisualization(t.Context(), 9); err != nil {
 		t.Fatalf("DeleteVisualization() error = %v", err)
 	}
 

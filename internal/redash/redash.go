@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -200,9 +201,7 @@ func (o *QueryOptions) UnmarshalJSON(data []byte) error {
 // the key they were read from.
 func (o QueryOptions) MarshalJSON() ([]byte, error) {
 	raw := make(map[string]json.RawMessage, len(o.Extra)+1)
-	for k, v := range o.Extra {
-		raw[k] = v
-	}
+	maps.Copy(raw, o.Extra)
 	if o.Parameters != nil {
 		params, err := json.Marshal(o.Parameters)
 		if err != nil {
@@ -268,9 +267,7 @@ func (p *QueryParameter) UnmarshalJSON(data []byte) error {
 // does, so it is left out too — but an empty one is not: see below.
 func (p QueryParameter) MarshalJSON() ([]byte, error) {
 	raw := make(map[string]json.RawMessage, len(p.Extra)+5)
-	for k, v := range p.Extra {
-		raw[k] = v
-	}
+	maps.Copy(raw, p.Extra)
 	put := func(key string, value any) error {
 		if value == nil {
 			return nil
@@ -575,8 +572,8 @@ func (c *Client) GetQuery(ctx context.Context, id int) (*Query, error) {
 func (c *Client) UpdateQuery(ctx context.Context, id int, u QueryUpdate) (*Query, error) {
 	var updated Query
 	if err := c.do(ctx, http.MethodPost, fmt.Sprintf("/api/queries/%d", id), u, &updated); err != nil {
-		var status *statusError
-		if u.Version != nil && errors.As(err, &status) && status.statusCode == http.StatusConflict {
+		status, isStatus := errors.AsType[*statusError](err)
+		if u.Version != nil && isStatus && status.statusCode == http.StatusConflict {
 			return nil, fmt.Errorf("%w: %v", ErrQueryVersionConflict, err)
 		}
 		return nil, err

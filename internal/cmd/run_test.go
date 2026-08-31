@@ -137,7 +137,7 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 	f.reached = make(chan string, 8)
 	f.release = make(chan struct{})
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/query_results", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/query_results", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.submitted = true
@@ -147,7 +147,7 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 		}
 		mustJSON(w, map[string]any{"job": job})
 	})
-	mux.HandleFunc("GET /api/jobs/job-1", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/jobs/job-1", func(w http.ResponseWriter, _ *http.Request) {
 		f.reach(pollRequest)
 		mustJSON(w, map[string]any{"job": map[string]any{"id": "job-1", "status": 1}})
 	})
@@ -162,7 +162,7 @@ func (f *fakeServer) start(t *testing.T) *httptest.Server {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("GET /api/query_results/42", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/query_results/42", func(w http.ResponseWriter, _ *http.Request) {
 		mustJSON(w, map[string]any{"query_result": map[string]any{"data": map[string]any{
 			"columns": []map[string]any{{"name": "n", "friendly_name": "N", "type": "integer"}},
 			"rows":    []map[string]any{{"n": 1}},
@@ -430,7 +430,7 @@ func runRdsh(t *testing.T, srv *httptest.Server, stdin string, args ...string) (
 // arranged XDG_CONFIG_HOME and the env pair.
 func runRdshWithEnvSet(t *testing.T, stdin string, args ...string) (string, error) {
 	t.Helper()
-	return runRdshWithStdin(t, context.Background(), strings.NewReader(stdin), args...)
+	return runRdshWithStdin(t.Context(), t, strings.NewReader(stdin), args...)
 }
 
 // commandReturnTimeout bounds how long a test waits for a command to
@@ -443,10 +443,10 @@ const commandReturnTimeout = 10 * time.Second
 // io.Reader stdin, so a test can cancel a command mid-prompt or hand it a
 // real *os.File. Both streams share one buffer, so a test that cares which
 // one produced the text has to assert the whole of it, or use runRdshSplit.
-func runRdshWithStdin(t *testing.T, ctx context.Context, stdin io.Reader, args ...string) (string, error) {
+func runRdshWithStdin(ctx context.Context, t *testing.T, stdin io.Reader, args ...string) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	err := runRdshInto(t, ctx, stdin, &out, &out, args...)
+	err := runRdshInto(ctx, t, stdin, &out, &out, args...)
 	return out.String(), err
 }
 
@@ -459,7 +459,7 @@ func runRdshSplit(t *testing.T, srv *httptest.Server, args ...string) (string, s
 	setRdshEnv(t, t.TempDir(), srv)
 
 	var out, errOut bytes.Buffer
-	err := runRdshInto(t, context.Background(), strings.NewReader(""), &out, &errOut, args...)
+	err := runRdshInto(t.Context(), t, strings.NewReader(""), &out, &errOut, args...)
 	return out.String(), errOut.String(), err
 }
 
@@ -468,7 +468,7 @@ func runRdshSplit(t *testing.T, srv *httptest.Server, args ...string) (string, s
 // its own; called directly, a run that did not would hang the package until
 // the test binary panics. Nothing may call t.Fatal from that goroutine — it
 // only ends the goroutine it runs on.
-func runRdshInto(t *testing.T, ctx context.Context, stdin io.Reader, out, errOut io.Writer, args ...string) error {
+func runRdshInto(ctx context.Context, t *testing.T, stdin io.Reader, out, errOut io.Writer, args ...string) error {
 	t.Helper()
 	root, report := newRootCmd()
 	root.SetOut(out)
@@ -716,13 +716,13 @@ func TestTimeoutFlagRejectsNegative(t *testing.T) {
 // TestWithTimeout pins what --timeout 0 means: no deadline at all, rather
 // than one that has already expired.
 func TestWithTimeout(t *testing.T) {
-	ctx, cancel := withTimeout(context.Background(), 0)
+	ctx, cancel := withTimeout(t.Context(), 0)
 	defer cancel()
 	if deadline, ok := ctx.Deadline(); ok {
 		t.Errorf("a zero timeout set a deadline of %s, want none", deadline)
 	}
 
-	bounded, cancelBounded := withTimeout(context.Background(), time.Minute)
+	bounded, cancelBounded := withTimeout(t.Context(), time.Minute)
 	defer cancelBounded()
 	if _, ok := bounded.Deadline(); !ok {
 		t.Error("a positive timeout set no deadline")

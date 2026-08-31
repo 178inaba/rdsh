@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -568,9 +569,7 @@ func TestQueryUpdateFields(t *testing.T) {
 			}
 
 			want := map[string]any{"version": float64(savedQueryVersion)}
-			for k, v := range tt.want {
-				want[k] = v
-			}
+			maps.Copy(want, tt.want)
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			if !reflect.DeepEqual(f.updated, want) {
