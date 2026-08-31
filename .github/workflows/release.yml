@@ -41,10 +41,7 @@ jobs:
       - uses: actions/create-github-app-token@v3
         id: app-token
         with:
-          # app-id is a legacy alias for client-id and warns as one; it
-          # stays because the App and the APP_ID variable already exist and
-          # are shared with the sibling CLIs.
-          app-id: ${{ vars.APP_ID }}
+          client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           # Read from the context rather than spelled out, so this file can
           # be copied to the sibling CLIs unedited.
