@@ -32,10 +32,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # A break in any of these reddens nothing. Plugin updates just stop
-      # arriving; a README that lost the ref drifts the other way and ships
-      # the skill ahead of the released binary it describes. Either surfaces
-      # far later than what the checks below catch.
+      # A break in any of these reddens nothing — the plugin stops updating,
+      # or the skill drifts ahead of the binary — so it surfaces far later
+      # than what the checks below catch.
       # The `// ""` and `type` defences are load-bearing: without them a
       # manifest that lost its version, and a source reverted to the string
       # "./", make jq throw and exit 5 rather than fail as the assertion.
