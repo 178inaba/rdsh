@@ -101,15 +101,9 @@ func writeJSON(w io.Writer, result *redash.QueryResult) error {
 }
 
 // outputOptions pin the bytes of every JSON stream rdsh prints. The format
-// is a contract callers branch on mechanically (see CLAUDE.md), so each of
-// these is a requirement rather than a preference, and dropping any one of
-// them changes the output:
-//
-// EscapeForHTML and EscapeForJS cover the characters a consumer evaluating
-// the output would trip over; PreserveRawStrings keeps a visualization's
-// stored options spelled the way Redash spelled them, since rdsh reads that
-// blob without interpreting it; Deterministic keeps two runs printing the
-// same result identically.
+// is a contract callers branch on mechanically (see CLAUDE.md), so every one
+// of these is load-bearing: none is a v2 default, and dropping any as
+// redundant changes the output. options_test.go says so in assertions.
 //
 // Result rows arrive already normalised (see queryResultPayload.result in
 // the redash package), so what is left here is to hold that spelling rather
@@ -129,23 +123,20 @@ func WriteObject(w io.Writer, v any) error {
 	if err := json.MarshalWrite(w, v, outputOptions); err != nil {
 		return err
 	}
-	// MarshalWrite stops at the end of the value, where the v1 encoder wrote
-	// a newline. It is part of the output a caller reads line by line.
+	// MarshalWrite stops at the value; the newline is part of what a caller
+	// reading line by line expects.
 	_, err := io.WriteString(w, "\n")
 	return err
 }
 
-// cellString renders one cell for a separated format. The cell is raw JSON,
-// so the only kind needing work is a string, which is unquoted because a
-// CSV field carries the text rather than its JSON spelling. Everything else
-// — numbers, booleans, nested arrays and objects — is already the least
-// ambiguous single-cell representation there is, and a number renders as the
-// text the warehouse wrote rather than as a float64 rounded back.
+// cellString renders one cell for a separated format. Only a string needs
+// work, since a CSV field carries the text rather than its JSON spelling;
+// every other kind is already the least ambiguous rendering there is.
 func cellString(v jsontext.Value) string {
 	switch v.Kind() {
-	// The zero value is the column being absent from this row; 'n' is the
-	// column present and null. Both render empty here, but only the JSON
-	// output can tell them apart, and it should.
+	// The zero value is the column missing from this row, 'n' the column
+	// present and null. A separated format has nothing to say about either;
+	// the JSON output keeps them apart.
 	case 0, 'n':
 		return ""
 	case '"':

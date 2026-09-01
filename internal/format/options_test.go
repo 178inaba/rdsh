@@ -10,16 +10,13 @@ import (
 	"github.com/178inaba/rdsh/internal/redash"
 )
 
-// The tests below pin the JSON spelling rdsh prints. The output format is a
-// contract callers branch on mechanically (see CLAUDE.md), so each is here to
-// fail if one of the encoder options behind that spelling is dropped as
-// redundant — none of the other tests in this repository reaches these two
-// dimensions, because a fixture built with an encoder cannot express them.
+// The tests below exist because nothing else in this repository reaches the
+// dimensions they cover: a fixture built with an encoder cannot hold a
+// pre-escaped sequence or an out-of-order object, so outputOptions could
+// lose an option and every other test would still pass.
 
-// TestWriteObjectEscapesLineSeparators covers EscapeForHTML and EscapeForJS
-// together. U+2028 and U+2029 are legal in a JSON string but end a line in
-// JavaScript, so leaving them raw breaks a consumer that evaluates the
-// output; < > & are escaped for the same lineage of reasons.
+// U+2028 and U+2029 are legal in a JSON string but end a line in JavaScript,
+// so a consumer evaluating the output breaks on the raw characters.
 func TestWriteObjectEscapesLineSeparators(t *testing.T) {
 	var buf bytes.Buffer
 	if err := format.WriteObject(&buf, map[string]string{
@@ -43,10 +40,9 @@ func TestWriteObjectEscapesLineSeparators(t *testing.T) {
 	}
 }
 
-// TestWriteObjectKeepsRawStringsAsSpelled covers PreserveRawStrings. A
-// visualization's stored options reach the output as the raw JSON Redash
-// sent, and Redash spells non-ASCII with \uXXXX; expanding those to the
-// characters they stand for would change the bytes of `rdsh query show`.
+// A visualization's stored options reach the output as the raw JSON Redash
+// sent, and Redash spells non-ASCII with \uXXXX. Expanding those changes the
+// bytes of `rdsh query show`.
 func TestWriteObjectKeepsRawStringsAsSpelled(t *testing.T) {
 	var buf bytes.Buffer
 	if err := format.WriteObject(&buf, map[string]jsontext.Value{
@@ -60,9 +56,8 @@ func TestWriteObjectKeepsRawStringsAsSpelled(t *testing.T) {
 	}
 }
 
-// TestWriteObjectSortsMapKeys covers Deterministic. A Go map iterates in a
-// different order each run, so without it the same result would print
-// differently from one invocation to the next.
+// A Go map iterates in a different order each run, so the same result would
+// otherwise print differently from one invocation to the next.
 func TestWriteObjectSortsMapKeys(t *testing.T) {
 	value := map[string]int{"z": 1, "a": 2, "m": 3}
 	want := `{"a":2,"m":3,"z":1}` + "\n"
@@ -79,8 +74,7 @@ func TestWriteObjectSortsMapKeys(t *testing.T) {
 	}
 }
 
-// TestWriteJSONEndsWithNewline covers the newline MarshalWrite does not
-// write. A caller reading the output line by line needs it.
+// MarshalWrite does not write the newline the v1 encoder did.
 func TestWriteJSONEndsWithNewline(t *testing.T) {
 	var buf bytes.Buffer
 	res := &redash.QueryResult{
@@ -95,9 +89,8 @@ func TestWriteJSONEndsWithNewline(t *testing.T) {
 	}
 }
 
-// TestCellStringDistinguishesNullFromAbsent covers what holding a cell as
-// raw JSON buys: a column present and null is a different thing from a
-// column the row does not carry, and only the raw value can say which.
+// What holding a cell as raw JSON buys: a column present and null is a
+// different thing from one the row does not carry.
 func TestCellStringDistinguishesNullFromAbsent(t *testing.T) {
 	res := &redash.QueryResult{
 		Columns: []redash.Column{{Name: "a"}, {Name: "b"}},

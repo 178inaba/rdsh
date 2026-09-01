@@ -410,17 +410,15 @@ type queryResultPayload struct {
 	} `json:"data"`
 }
 
-// cellOptions are applied to every cell on the way in, so that the bytes a
-// command prints do not depend on how the warehouse happened to spell them.
-// Whatever escaping the server chose is redone rdsh's way and object members
-// are put in a fixed order; a number's text is left alone, since neither
-// CanonicalizeRawInts nor CanonicalizeRawFloats is set.
+// cellOptions settle how a cell is spelled, so that printed bytes do not
+// depend on how the warehouse happened to write it. A number's text survives
+// because neither CanonicalizeRawInts nor CanonicalizeRawFloats is set, and
+// that absence is the point: it is what keeps an integer past 2^53 exact.
 //
-// Normalising here rather than at the point of printing is what keeps the
-// output byte-for-byte what it was before rows became raw JSON — the format
-// is a contract, see CLAUDE.md. It is the only reason this exists: passing
-// the server's own bytes straight through would be the more faithful thing
-// to do if that contract ever allowed it.
+// This exists only to keep the output what it was before rows became raw
+// JSON — the format is a contract, see CLAUDE.md. Passing the server's own
+// bytes straight through would be the more faithful thing to do if that
+// contract ever allowed it.
 var cellOptions = json.JoinOptions(
 	jsontext.EscapeForHTML(true),
 	jsontext.EscapeForJS(true),
@@ -614,17 +612,15 @@ func (c *Client) GetSession(ctx context.Context) error {
 	return c.do(ctx, http.MethodGet, "/api/session", nil, nil)
 }
 
-// requestOptions shape every request body this package sends. Deterministic
-// puts the members of a Go map in a fixed order, so that two runs composing
-// the same update send the same bytes and a test can compare them; the
-// options blobs are maps, and their iteration order would otherwise vary.
-// PreserveRawStrings leaves an escape sequence inside a raw value as the
-// caller wrote it, which is what --options-file promises when it says each
-// key is kept as it was written.
+// requestOptions shape every request body this package sends. The options
+// blobs are Go maps, whose iteration order would otherwise leave two runs
+// composing the same update sending different bytes; and --options-file
+// promises each key is kept as it was written, which holds only if escape
+// sequences inside a raw value survive.
 //
-// Nothing asks for the escaping v1 applied to `<`, `>` and `&`: those bytes
-// go to Redash rather than to a terminal, and the value they decode to is
-// the same either way.
+// The escaping v1 applied to `<`, `>` and `&` is deliberately absent: these
+// bytes go to Redash rather than to a terminal, and decode the same either
+// way.
 var requestOptions = json.JoinOptions(
 	json.Deterministic(true),
 	jsontext.PreserveRawStrings(true),
