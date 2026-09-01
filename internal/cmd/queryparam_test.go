@@ -138,6 +138,15 @@ func TestParseParamFlagsRejections(t *testing.T) {
 			wantErr: "--param-default",
 		},
 		{
+			// Everything downstream is JSON, which holds nothing else. The
+			// refusal is here rather than at the encoder so that the flag at
+			// fault is named, and so that a default is never dropped or sent
+			// as null in place of text rdsh could not carry.
+			name:    "value that is not valid UTF-8",
+			flags:   paramFlagValues{defaults: []string{"days=\xff"}},
+			wantErr: "UTF-8",
+		},
+		{
 			name:    "empty name",
 			flags:   paramFlagValues{defaults: []string{"=7"}},
 			wantErr: "--param-default",

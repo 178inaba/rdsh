@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -813,7 +814,15 @@ func parseQueryParams(params []string) (map[string]string, error) {
 // is at the first =, so everything after it is the value and needs no
 // escaping of its own: a Redash parameter name cannot contain one, and a
 // pattern very well may.
+//
+// The token has to be valid UTF-8 because everything downstream of here is
+// JSON, which cannot hold anything else. Refusing it at the boundary is what
+// keeps the failure legible: encoding it later cannot say which flag was at
+// fault, and rdsh does not repair what it was given.
 func splitParamToken(flag, token string) (string, string, error) {
+	if !utf8.ValidString(token) {
+		return "", "", fmt.Errorf("%s was given text that is not valid UTF-8", flag)
+	}
 	name, value, ok := strings.Cut(token, "=")
 	if !ok || name == "" {
 		return "", "", fmt.Errorf("%s %q has no parameter name to bind to; pass it as name=value", flag, token)
@@ -861,10 +870,10 @@ func mergeParameters(stored []redash.QueryParameter,
 // parameterText renders a stored default for comparison with a --param
 // value, which is always a string. A string default is unquoted so that it
 // compares as the text a caller would type; every other kind compares by
-// its JSON, so a number matches the text it was written with and a default
-// that is not a scalar at all — a date range is an object — never equals
-// one, which is what makes the notice fire for the parameter kinds --param
-// cannot express.
+// its JSON, so a number matches the text it was written with. A default
+// that is not a scalar at all — a date range is an object — matches only a
+// --param value spelling out that whole object, which is what makes the
+// notice fire for the parameter kinds --param cannot express.
 func parameterText(value jsontext.Value) string {
 	if value.Kind() == '"' {
 		if unquoted, err := jsontext.AppendUnquote(nil, value); err == nil {

@@ -521,8 +521,10 @@ func chartOptions(seriesType, x string, ys []string) (map[string]jsontext.Value,
 	if err := checkAxesSurvive(nil, mapping); err != nil {
 		return nil, err
 	}
-	// Both values are composed here from strings, so neither can fail to
-	// encode and the errors json.Marshal declares cannot occur.
+	// Encoding a string can fail on one that is not valid UTF-8, which JSON
+	// cannot hold. Neither of these is: the type comes from the --type enum,
+	// and every column name has already been matched against the query's
+	// result by validateChartColumns, whose own text arrived as valid JSON.
 	seriesJSON, _ := json.Marshal(seriesType)
 	mappingJSON, _ := json.Marshal(mapping, mappingOptions)
 	return map[string]jsontext.Value{
