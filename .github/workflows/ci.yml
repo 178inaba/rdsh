@@ -32,8 +32,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # A break in any of these reddens nothing — plugin updates just stop
-      # arriving, so it surfaces far later than what the checks below catch.
+      # A break in any of these reddens nothing — the plugin stops updating,
+      # or the skill drifts ahead of the binary — so it surfaces far later
+      # than what the checks below catch.
       # The `// ""` and `type` defences are load-bearing: without them a
       # manifest that lost its version, and a source reverted to the string
       # "./", make jq throw and exit 5 rather than fail as the assertion.
@@ -47,6 +48,8 @@ jobs:
             || { echo "::error::the .claude-plugin/marketplace.json plugin entry's source must be a source object pinned to ref stable, not a path"; exit 1; }
           [ "$(git config -f .tagpr tagpr.versionFile)" = .claude-plugin/plugin.json ] \
             || { echo "::error::.tagpr must set versionFile to .claude-plugin/plugin.json, or tagpr stops bumping the version that stable ships"; exit 1; }
+          grep -q 'npx skills add https://github.com/178inaba/rdsh/tree/stable' README.md \
+            || { echo "::error::README.md's npx skills install command must pin the stable tag"; exit 1; }
       # golangci-lint-action resolves an empty tag — and a `latest` tag — to
       # whatever the newest release is, so a compose.yaml that lost its pin
       # would leave this job green and silently unpinned. Any other malformed

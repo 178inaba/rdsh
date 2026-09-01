@@ -248,7 +248,9 @@ claude plugin install rdsh@rdsh
 For other agents, use a skill installer that consumes GitHub repos directly, e.g. [`npx skills`](https://www.npmjs.com/package/skills):
 
 ```sh
-npx skills add 178inaba/rdsh
+# The URL form is required: 178inaba/rdsh@stable reads that suffix as a
+# skill-name filter, so it silently installs from the default branch.
+npx skills add https://github.com/178inaba/rdsh/tree/stable
 ```
 
 ## Development
