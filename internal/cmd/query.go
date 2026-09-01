@@ -1,13 +1,14 @@
 package cmd
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -518,14 +519,18 @@ func runQueryList(cmd *cobra.Command, args []string, g *globalFlags, mine bool, 
 func queryListResult(client *redash.Client, queries []redash.Query) *redash.QueryResult {
 	result := &redash.QueryResult{
 		Columns: []redash.Column{{Name: "id"}, {Name: "name"}, {Name: "is_draft"}, {Name: "url"}},
-		Rows:    make([]map[string]any, len(queries)),
+		Rows:    make([]map[string]jsontext.Value, len(queries)),
 	}
 	for i, q := range queries {
-		result.Rows[i] = map[string]any{
-			"id":       q.ID,
-			"name":     q.Name,
-			"is_draft": q.IsDraft,
-			"url":      client.QueryURL(q.ID),
+		// A cell is raw JSON, so the scalars assembled here are encoded to
+		// reach it. Plain options are enough: none of these is a string
+		// carrying an escape, an object whose members have an order, or a
+		// number whose text matters.
+		result.Rows[i] = map[string]jsontext.Value{
+			"id":       rawJSON(q.ID),
+			"name":     rawJSON(q.Name),
+			"is_draft": rawJSON(q.IsDraft),
+			"url":      rawJSON(client.QueryURL(q.ID)),
 		}
 	}
 	return result
@@ -650,10 +655,10 @@ func writeQueryDetail(w io.Writer, q *redash.Query, url string) error {
 	// The keys are passed through exactly as they arrived, which is what
 	// makes the round trip lossless for the ones rdsh has no name for.
 	type queryVisualization struct {
-		ID      int                        `json:"id"`
-		Type    string                     `json:"type"`
-		Name    string                     `json:"name"`
-		Options map[string]json.RawMessage `json:"options"`
+		ID      int                       `json:"id"`
+		Type    string                    `json:"type"`
+		Name    string                    `json:"name"`
+		Options map[string]jsontext.Value `json:"options"`
 	}
 	// Empty rather than null for a query with no charts, so a caller can
 	// iterate it without a branch — the same reason the row output prints
@@ -665,7 +670,7 @@ func writeQueryDetail(w io.Writer, q *redash.Query, url string) error {
 		// start from.
 		options := v.Options
 		if options == nil {
-			options = map[string]json.RawMessage{}
+			options = map[string]jsontext.Value{}
 		}
 		visualizations = append(visualizations,
 			queryVisualization{ID: v.ID, Type: v.Type, Name: v.Name, Options: options})
@@ -809,7 +814,15 @@ func parseQueryParams(params []string) (map[string]string, error) {
 // is at the first =, so everything after it is the value and needs no
 // escaping of its own: a Redash parameter name cannot contain one, and a
 // pattern very well may.
+//
+// The token has to be valid UTF-8 because everything downstream of here is
+// JSON, which cannot hold anything else. Refusing it at the boundary is what
+// keeps the failure legible: encoding it later cannot say which flag was at
+// fault, and rdsh does not repair what it was given.
 func splitParamToken(flag, token string) (string, string, error) {
+	if !utf8.ValidString(token) {
+		return "", "", fmt.Errorf("%s was given text that is not valid UTF-8", flag)
+	}
 	name, value, ok := strings.Cut(token, "=")
 	if !ok || name == "" {
 		return "", "", fmt.Errorf("%s %q has no parameter name to bind to; pass it as name=value", flag, token)
@@ -828,10 +841,11 @@ func splitParamToken(flag, token string) (string, string, error) {
 // nothing about is sent as it is, since a query saved by `rdsh query
 // create` carries no parameter definitions at all and its placeholders are
 // reachable no other way.
-func mergeParameters(stored []redash.QueryParameter, overrides map[string]string) (map[string]any, bool) {
-	values := make(map[string]any, len(stored)+len(overrides))
+func mergeParameters(stored []redash.QueryParameter,
+	overrides map[string]string) (map[string]jsontext.Value, bool) {
+	values := make(map[string]jsontext.Value, len(stored)+len(overrides))
 	for _, p := range stored {
-		if p.Value == nil {
+		if noDefault(p.Value) {
 			continue
 		}
 		values[p.Name] = p.Value
@@ -847,19 +861,27 @@ func mergeParameters(stored []redash.QueryParameter, overrides map[string]string
 		if current, ok := values[name]; ok && parameterText(current) == override {
 			continue
 		}
-		values[name] = override
+		values[name] = rawJSON(override)
 		matchesDefaults = false
 	}
 	return values, matchesDefaults
 }
 
 // parameterText renders a stored default for comparison with a --param
-// value, which is always a string. Numbers arrive as json.Number and
-// compare by the text they were written with; a default that is not a
-// scalar at all — a date range is an object — never equals one, which is
-// what makes the notice fire for the parameter kinds --param cannot
-// express.
-func parameterText(value any) string { return fmt.Sprint(value) }
+// value, which is always a string. A string default is unquoted so that it
+// compares as the text a caller would type; every other kind compares by
+// its JSON, so a number matches the text it was written with. A default
+// that is not a scalar at all — a date range is an object — matches only a
+// --param value spelling out that whole object, which is what makes the
+// notice fire for the parameter kinds --param cannot express.
+func parameterText(value jsontext.Value) string {
+	if value.Kind() == '"' {
+		if unquoted, err := jsontext.AppendUnquote(nil, value); err == nil {
+			return string(unquoted)
+		}
+	}
+	return string(value)
+}
 
 // resolveQueryID reads the <id|url> argument the saved-query commands take:
 // an all-digit value is an ID, anything else has to be a query URL on the

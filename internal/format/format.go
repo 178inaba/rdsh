@@ -3,10 +3,10 @@ package format
 
 import (
 	"encoding/csv"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"io"
-	"strconv"
 
 	"github.com/178inaba/rdsh/internal/redash"
 )
@@ -90,41 +90,64 @@ func writeSeparated(w io.Writer, comma rune, result *redash.QueryResult) error {
 // writeJSON emits an array of row objects — the shape fixed by the spec.
 // Column order and type metadata are intentionally not carried.
 func writeJSON(w io.Writer, result *redash.QueryResult) error {
+	// [] for a result with no rows, spelled here rather than left to the
+	// encoder's default so that the contract does not move if that default
+	// does.
 	rows := result.Rows
 	if rows == nil {
-		rows = []map[string]any{}
+		rows = []map[string]jsontext.Value{}
 	}
 	return WriteObject(w, rows)
 }
 
+// outputOptions pin the bytes of every JSON stream rdsh prints. The format
+// is a contract callers branch on mechanically (see CLAUDE.md), so every one
+// of these is load-bearing: none is a v2 default, and dropping any as
+// redundant changes the output. options_test.go says so in assertions.
+//
+// Result rows arrive already normalised (see queryResultPayload.result in
+// the redash package), so what is left here is to hold that spelling rather
+// than to choose it.
+var outputOptions = json.JoinOptions(
+	jsontext.EscapeForHTML(true),
+	jsontext.EscapeForJS(true),
+	jsontext.PreserveRawStrings(true),
+	json.Deterministic(true),
+)
+
 // WriteObject renders one value as JSON, for output that is a single record
 // rather than the row set Write renders — the saved query `rdsh query show`
-// reads. Both go through here so that every JSON stream rdsh prints comes
-// from one encoder: the standard HTML escaping is then a decision made once
-// rather than a coincidence between two call sites.
+// reads. Both go through here so that every JSON stream rdsh prints is
+// spelled one way rather than by coincidence between two call sites.
 func WriteObject(w io.Writer, v any) error {
-	return json.NewEncoder(w).Encode(v)
+	if err := json.MarshalWrite(w, v, outputOptions); err != nil {
+		return err
+	}
+	// MarshalWrite stops at the value; the newline is part of what a caller
+	// reading line by line expects.
+	_, err := io.WriteString(w, "\n")
+	return err
 }
 
-func cellString(v any) string {
-	switch t := v.(type) {
-	case nil:
+// cellString renders one cell for a separated format. Only a string needs
+// work, since a CSV field carries the text rather than its JSON spelling;
+// every other kind is already the least ambiguous rendering there is.
+func cellString(v jsontext.Value) string {
+	switch v.Kind() {
+	// The zero value is the column missing from this row, 'n' the column
+	// present and null. A separated format has nothing to say about either;
+	// the JSON output keeps them apart.
+	case 0, 'n':
 		return ""
-	case string:
-		return t
-	case json.Number:
-		return t.String()
-	case bool:
-		return strconv.FormatBool(t)
-	default:
-		// Native scalars from a row a command assembled itself (the saved
-		// query listing's IDs), nested arrays/objects, and anything
-		// unexpected: JSON is the least ambiguous single-cell
-		// representation, and renders an int exactly as strconv would.
-		b, err := json.Marshal(t)
+	case '"':
+		unquoted, err := jsontext.AppendUnquote(nil, v)
 		if err != nil {
-			return fmt.Sprint(t)
+			// Unreachable for a value that parsed as a JSON string, but
+			// printing the raw spelling beats dropping the cell.
+			return string(v)
 		}
-		return string(b)
+		return string(unquoted)
+	default:
+		return string(v)
 	}
 }

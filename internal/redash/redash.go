@@ -8,11 +8,11 @@ package redash
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -78,9 +78,15 @@ type Column struct {
 
 // QueryResult holds the fetched result data. Rows are maps keyed by column
 // name; output ordering must come from Columns.
+//
+// A cell is the JSON the warehouse produced, held as it arrived rather than
+// decoded into a Go value: that is what keeps an integer past 2^53 exact,
+// and it is all rdsh needs, since every consumer either prints the cell or
+// compares its text. A column a row does not carry reads back as the zero
+// value, which tells it apart from one carrying null.
 type QueryResult struct {
 	Columns []Column
-	Rows    []map[string]any
+	Rows    []map[string]jsontext.Value
 }
 
 // Query is a saved Redash query.
@@ -121,17 +127,17 @@ type Visualization struct {
 	// carries, so an edit has to be able to send back what it never meant
 	// to touch — the same problem QueryOptions.Extra solves, over a schema
 	// with far more keys and no field here worth naming.
-	Options map[string]json.RawMessage `json:"options"`
+	Options map[string]jsontext.Value `json:"options"`
 }
 
 // NewVisualization holds the fields the API accepts when a visualization is
 // created. Redash does not validate Options at all, so a malformed one is
 // stored without complaint and shows up only as a blank chart in the UI.
 type NewVisualization struct {
-	QueryID int                        `json:"query_id"`
-	Type    string                     `json:"type"`
-	Name    string                     `json:"name"`
-	Options map[string]json.RawMessage `json:"options"`
+	QueryID int                       `json:"query_id"`
+	Type    string                    `json:"type"`
+	Name    string                    `json:"name"`
+	Options map[string]jsontext.Value `json:"options"`
 }
 
 // VisualizationUpdate holds the fields to change on a visualization; a nil
@@ -139,13 +145,13 @@ type NewVisualization struct {
 // composed from one that was just read rather than from nothing — which is
 // what keeps a rename from clearing the chart's settings.
 type VisualizationUpdate struct {
-	Type *string `json:"type,omitempty"`
-	Name *string `json:"name,omitempty"`
+	Type *string `json:"type,omitzero"`
+	Name *string `json:"name,omitzero"`
 	// Options is a pointer for the same reason Type and Name are: an empty
 	// object is a value — it resets the visualization to the front end's own
 	// defaults — and a plain map with omitempty could not tell that apart
 	// from an edit that leaves the options alone.
-	Options *map[string]json.RawMessage `json:"options,omitempty"`
+	Options *map[string]jsontext.Value `json:"options,omitzero"`
 }
 
 // QueryOptions is a saved query's options object. Redash's update replaces
@@ -157,159 +163,39 @@ type QueryOptions struct {
 	// Parameters is the parameter definitions, in the order they are
 	// stored. Nil means the object had no parameters key, which is left
 	// out again on the way back rather than written as an empty list.
-	Parameters []QueryParameter
-	// Extra is every other key of the object, kept as it arrived.
-	Extra map[string]json.RawMessage
-}
-
-// parametersKey is the one options key QueryOptions has a field for; it is
-// held out of Extra on the way in and put back on the way out.
-const parametersKey = "parameters"
-
-// UnmarshalJSON decodes the object into the parameter definitions and Extra.
-//
-// The decoder is built here rather than taken from the caller because
-// encoding/json does not carry UseNumber into a custom UnmarshalJSON: a
-// plain json.Unmarshal would turn a numeric default into a float64 and lose
-// the text QueryParameter.Value promises to reproduce.
-func (o *QueryOptions) UnmarshalJSON(data []byte) error {
-	// The keys are taken as raw JSON, which needs no number handling of its
-	// own; each value that becomes a Go type goes through decodeJSON below.
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	// A null options key reaches a custom UnmarshalJSON where it would have
-	// been skipped for a plain struct field. Nothing to decode is the same
-	// as no options at all.
-	if raw == nil {
-		return nil
-	}
-	if params, ok := raw[parametersKey]; ok {
-		if err := decodeJSON(bytes.NewReader(params), &o.Parameters); err != nil {
-			return err
-		}
-		delete(raw, parametersKey)
-	}
-	if len(raw) > 0 {
-		o.Extra = raw
-	}
-	return nil
-}
-
-// MarshalJSON writes Extra back with the parameter definitions in place of
-// the key they were read from.
-func (o QueryOptions) MarshalJSON() ([]byte, error) {
-	raw := make(map[string]json.RawMessage, len(o.Extra)+1)
-	maps.Copy(raw, o.Extra)
-	if o.Parameters != nil {
-		params, err := json.Marshal(o.Parameters)
-		if err != nil {
-			return nil, err
-		}
-		raw[parametersKey] = params
-	}
-	return json.Marshal(raw)
+	Parameters []QueryParameter `json:"parameters,omitzero"`
+	// Extra is every other key of the object, kept as it arrived. The
+	// "embed" option makes it the fallback the members without a field of
+	// their own are read into and written back from.
+	Extra map[string]jsontext.Value `json:",embed"`
 }
 
 // QueryParameter is one parameter defined on a saved query. The fields are
 // the scalar parameter kinds rdsh can express; Extra carries everything
 // else — the fields a range, enum or dropdown-query parameter needs — so a
 // definition rdsh does not understand still survives an update.
+//
+// Each field is left out when it holds its zero value, which is what keeps a
+// blank label from replacing the name Redash falls back to. The tag says
+// omitzero rather than omitempty because the two part company exactly where
+// it matters: "" is a value a text parameter's default can hold, and
+// omitempty would drop it.
 type QueryParameter struct {
-	Name  string
-	Title string
-	Type  string
-	// Value is the stored default, decoded as it came: numbers stay
-	// json.Number, so sending one back reproduces the text Redash hashed
-	// the query with. A parameter defined without a default is nil.
-	Value any
+	Name  string `json:"name,omitzero"`
+	Title string `json:"title,omitzero"`
+	Type  string `json:"type,omitzero"`
+	// Value is the stored default, held as the JSON it arrived as rather
+	// than decoded: a number keeps the text Redash hashed the query with,
+	// where a float64 would round one past 2^53. A parameter defined
+	// without a default carries no such key and reads back as nil; one
+	// defined with an explicit null reads back as that null. What null
+	// means — no default — is decided where the default is read, in
+	// paramValue and mergeParameters, rather than flattened away here.
+	Value jsontext.Value `json:"value,omitzero"`
 	// Regex is the pattern a text-pattern parameter's value must match in
 	// full. Empty on every other type.
-	Regex string
-	Extra map[string]json.RawMessage
-}
-
-// UnmarshalJSON decodes one definition, keeping the keys rdsh has no field
-// for. It builds its own decoder for the same reason QueryOptions does.
-func (p *QueryParameter) UnmarshalJSON(data []byte) error {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	// Each key a field claims is taken out of raw, so what is left over is
-	// exactly what Extra has to carry.
-	take := func(key string, out any) error {
-		value, ok := raw[key]
-		if !ok {
-			return nil
-		}
-		delete(raw, key)
-		return decodeJSON(bytes.NewReader(value), out)
-	}
-	if err := errors.Join(
-		take("name", &p.Name),
-		take("title", &p.Title),
-		take("type", &p.Type),
-		take("value", &p.Value),
-		take("regex", &p.Regex),
-	); err != nil {
-		return err
-	}
-	if len(raw) > 0 {
-		p.Extra = raw
-	}
-	return nil
-}
-
-// MarshalJSON writes the definition back, leaving out the fields that were
-// never set. A null value reads as "no default" exactly as an absent one
-// does, so it is left out too — but an empty one is not: see below.
-func (p QueryParameter) MarshalJSON() ([]byte, error) {
-	raw := make(map[string]json.RawMessage, len(p.Extra)+5)
-	maps.Copy(raw, p.Extra)
-	put := func(key string, value any) error {
-		if value == nil {
-			return nil
-		}
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return err
-		}
-		raw[key] = encoded
-		return nil
-	}
-	// An empty string means "never set" for the fields that name something,
-	// and leaving one out is what keeps a blank label from replacing the
-	// name Redash falls back to. It does not mean that for the default: ""
-	// is a value a text parameter can hold, and dropping it would store the
-	// parameter as having no default at all.
-	putName := func(key, value string) error {
-		if value == "" {
-			return nil
-		}
-		return put(key, value)
-	}
-	if err := errors.Join(
-		putName("name", p.Name),
-		putName("title", p.Title),
-		putName("type", p.Type),
-		put("value", p.Value),
-		putName("regex", p.Regex),
-	); err != nil {
-		return nil, err
-	}
-	return json.Marshal(raw)
-}
-
-// decodeJSON decodes one JSON value with numbers kept as json.Number, which
-// is what every decoding in this package does: responses through do, and the
-// custom UnmarshalJSON methods above, which have to spell it out because
-// encoding/json does not pass the setting down to them.
-func decodeJSON(r io.Reader, out any) error {
-	dec := json.NewDecoder(r)
-	dec.UseNumber()
-	return dec.Decode(out)
+	Regex string                    `json:"regex,omitzero"`
+	Extra map[string]jsontext.Value `json:",embed"`
 }
 
 // NewQuery holds the fields the API accepts when a saved query is created.
@@ -322,27 +208,27 @@ type NewQuery struct {
 	// with. Redash recomputes the query hash as it saves, so defaults set
 	// here link an existing result to the query at creation time; nil
 	// leaves the options key out.
-	Options *QueryOptions `json:"options,omitempty"`
+	Options *QueryOptions `json:"options,omitzero"`
 }
 
 // QueryUpdate holds the fields to change on a saved query; a nil field is
 // left as it is. Pointers rather than plain fields so clearing a value
 // (an empty description) stays distinguishable from not touching it.
 type QueryUpdate struct {
-	Name        *string `json:"name,omitempty"`
-	Description *string `json:"description,omitempty"`
-	Query       *string `json:"query,omitempty"`
-	IsDraft     *bool   `json:"is_draft,omitempty"`
+	Name        *string `json:"name,omitzero"`
+	Description *string `json:"description,omitzero"`
+	Query       *string `json:"query,omitzero"`
+	IsDraft     *bool   `json:"is_draft,omitzero"`
 	// Options replaces the query's whole options object, so it has to be
 	// composed from one that was just read rather than from nothing. Nil
 	// leaves the key out, which is what keeps an update of the query's
 	// metadata alone from clearing its parameter definitions.
-	Options *QueryOptions `json:"options,omitempty"`
+	Options *QueryOptions `json:"options,omitzero"`
 	// Version opts into the server's conflict check: set it to the version
 	// of the query this update was composed from and a competing edit fails
 	// the update instead of being silently overwritten. Left nil, the
 	// server applies the update as a last write.
-	Version *int `json:"version,omitempty"`
+	Version *int `json:"version,omitzero"`
 }
 
 // QueryListOptions narrows what ListQueries returns.
@@ -380,8 +266,12 @@ func (c *Client) RunQuery(ctx context.Context, query string, dataSourceID int) (
 // taken over.
 //
 // parameters supplies a value for every placeholder the query has; one left
-// uncovered fails the execution on the server rather than here.
-func (c *Client) RefreshQuery(ctx context.Context, id int, parameters map[string]any) (*QueryResult, error) {
+// uncovered fails the execution on the server rather than here. Each is the
+// JSON to send for that placeholder, the same spelling QueryParameter.Value
+// holds, so a stored default travels back as the text its hash was taken
+// over rather than through a Go type that might reformat it.
+func (c *Client) RefreshQuery(ctx context.Context, id int,
+	parameters map[string]jsontext.Value) (*QueryResult, error) {
 	job, err := c.submitSavedQuery(ctx, id, parameters)
 	if err != nil {
 		return nil, err
@@ -466,11 +356,12 @@ func (c *Client) submitQuery(ctx context.Context, query string, dataSourceID int
 
 // submitSavedQuery asks the server to execute the saved query with the
 // given parameter values.
-func (c *Client) submitSavedQuery(ctx context.Context, id int, parameters map[string]any) (*Job, error) {
+func (c *Client) submitSavedQuery(ctx context.Context, id int,
+	parameters map[string]jsontext.Value) (*Job, error) {
 	if parameters == nil {
 		// The server reads the field with a default an explicit null
 		// defeats, and then fails on the null it got instead.
-		parameters = map[string]any{}
+		parameters = map[string]jsontext.Value{}
 	}
 	// apply_auto_limit is deliberately absent rather than false: left out,
 	// the server falls back to the query's own options.apply_auto_limit,
@@ -514,12 +405,44 @@ func (c *Client) CancelJob(ctx context.Context, id string) error {
 // queryResultPayload is the shape a stored result arrives in.
 type queryResultPayload struct {
 	Data struct {
-		Columns []Column         `json:"columns"`
-		Rows    []map[string]any `json:"rows"`
+		Columns []Column                    `json:"columns"`
+		Rows    []map[string]jsontext.Value `json:"rows"`
 	} `json:"data"`
 }
 
+// cellOptions settle how a cell is spelled, so that printed bytes do not
+// depend on how the warehouse happened to write it. A number's text survives
+// because neither CanonicalizeRawInts nor CanonicalizeRawFloats is set, and
+// that absence is the point: it is what keeps an integer past 2^53 exact.
+//
+// This exists only to keep the output what it was before rows became raw
+// JSON — the format is a contract, see CLAUDE.md. Passing the server's own
+// bytes straight through would be the more faithful thing to do if that
+// contract ever allowed it.
+var cellOptions = json.JoinOptions(
+	jsontext.EscapeForHTML(true),
+	jsontext.EscapeForJS(true),
+	jsontext.ReorderRawObjects(true),
+)
+
 func (p *queryResultPayload) result() *QueryResult {
+	for _, row := range p.Data.Rows {
+		for column, cell := range row {
+			// Only these three kinds can come out different: cellOptions
+			// leaves number formatting alone, and a boolean or a null has
+			// one spelling. Skipping the rest matters because Format costs
+			// the same for a four-byte number as for a nested object, and a
+			// result is as many cells as it is rows times columns.
+			switch cell.Kind() {
+			case '"', '{', '[':
+				// Format rewrites the value in place; it can only fail on
+				// JSON that did not parse, which this already did.
+				if err := cell.Format(cellOptions); err == nil {
+					row[column] = cell
+				}
+			}
+		}
+	}
 	return &QueryResult{Columns: p.Data.Columns, Rows: p.Data.Rows}
 }
 
@@ -689,13 +612,27 @@ func (c *Client) GetSession(ctx context.Context) error {
 	return c.do(ctx, http.MethodGet, "/api/session", nil, nil)
 }
 
+// requestOptions shape every request body this package sends. The options
+// blobs are Go maps, whose iteration order would otherwise leave two runs
+// composing the same update sending different bytes; and --options-file
+// promises each key is kept as it was written, which holds only if escape
+// sequences inside a raw value survive.
+//
+// The escaping v1 applied to `<`, `>` and `&` is deliberately absent: these
+// bytes go to Redash rather than to a terminal, and decode the same either
+// way.
+var requestOptions = json.JoinOptions(
+	json.Deterministic(true),
+	jsontext.PreserveRawStrings(true),
+)
+
 // do sends one authenticated request and decodes the JSON response into out
 // (skipped when out is nil). Non-2xx responses become errors carrying the
 // HTTP status and the server's message field when present.
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
 	var reqBody io.Reader
 	if body != nil {
-		data, err := json.Marshal(body)
+		data, err := json.Marshal(body, requestOptions)
 		if err != nil {
 			return err
 		}
@@ -722,9 +659,10 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if out == nil {
 		return nil
 	}
-	// Numbers stay json.Number so large integers survive the round trip to
-	// CSV/JSON output instead of degrading to float64.
-	if err := decodeJSON(resp.Body, out); err != nil {
+	// The defaults are the strict ones: a response with a duplicate member
+	// or invalid UTF-8 is an error rather than something quietly repaired,
+	// and a field name has to match the case it is declared with.
+	if err := json.UnmarshalRead(resp.Body, out); err != nil {
 		return fmt.Errorf("%s %s: decode response: %w", method, path, err)
 	}
 	return nil

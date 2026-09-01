@@ -1,9 +1,9 @@
 package redash_test
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -54,10 +54,8 @@ type fakeRedash struct {
 	nullQueryOptions bool
 	createdQuery     map[string]any // body of POST /api/queries
 	updatedQuery     map[string]any // body of POST /api/queries/7
-	// updatedRaw is that same body before decoding. A round-trip test
-	// compares numbers, and decoding twice — once here without UseNumber
-	// for the tests that read plain values, once from these bytes with it —
-	// is what keeps a large integer readable as the text that was sent.
+	// updatedRaw is that same body before decoding, for the tests that
+	// compare the bytes sent rather than the values they carry.
 	updatedRaw   []byte
 	queryVersion int           // version served by GET /api/queries/7
 	updateStatus int           // HTTP status for POST /api/queries/7, default 200
@@ -79,7 +77,7 @@ func (f *fakeRedash) server() *httptest.Server {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.gotAuth = append(f.gotAuth, r.Header.Get("Authorization"))
-		if err := json.NewDecoder(r.Body).Decode(&f.submittedBody); err != nil {
+		if err := json.UnmarshalRead(r.Body, &f.submittedBody); err != nil {
 			f.t.Errorf("decode submitted body: %v", err)
 		}
 		if f.submitRefusal != "" {
@@ -140,7 +138,7 @@ func (f *fakeRedash) server() *httptest.Server {
 	mux.HandleFunc("POST /api/queries", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		if err := json.NewDecoder(r.Body).Decode(&f.createdQuery); err != nil {
+		if err := json.UnmarshalRead(r.Body, &f.createdQuery); err != nil {
 			f.t.Errorf("decode created query: %v", err)
 		}
 		// Redash forces every new query to be a draft, whatever the request
@@ -174,7 +172,7 @@ func (f *fakeRedash) server() *httptest.Server {
 	mux.HandleFunc("POST /api/queries/7/results", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		if err := json.NewDecoder(r.Body).Decode(&f.refreshBody); err != nil {
+		if err := json.UnmarshalRead(r.Body, &f.refreshBody); err != nil {
 			f.t.Errorf("decode refresh body: %v", err)
 		}
 		writeJSON(w, map[string]any{"job": map[string]any{"id": "job-1", "status": 1}})
@@ -200,7 +198,7 @@ func (f *fakeRedash) server() *httptest.Server {
 	mux.HandleFunc("POST /api/visualizations", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		if err := json.NewDecoder(r.Body).Decode(&f.createdViz); err != nil {
+		if err := json.UnmarshalRead(r.Body, &f.createdViz); err != nil {
 			f.t.Errorf("decode created visualization: %v", err)
 		}
 		writeJSON(w, map[string]any{
@@ -211,7 +209,7 @@ func (f *fakeRedash) server() *httptest.Server {
 	mux.HandleFunc("POST /api/visualizations/9", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		if err := json.NewDecoder(r.Body).Decode(&f.updatedViz); err != nil {
+		if err := json.UnmarshalRead(r.Body, &f.updatedViz); err != nil {
 			f.t.Errorf("decode updated visualization: %v", err)
 		}
 		writeJSON(w, map[string]any{"id": 9, "type": "CHART", "name": "chart"})
@@ -281,7 +279,7 @@ func (f *fakeRedash) handleQueryList(w http.ResponseWriter, r *http.Request) {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(v); err != nil {
+	if err := json.MarshalWrite(w, v); err != nil {
 		panic(err)
 	}
 }
@@ -309,8 +307,10 @@ func TestRunQuerySuccess(t *testing.T) {
 	if len(got.Rows) != 2 {
 		t.Fatalf("len(Rows) = %d, want 2", len(got.Rows))
 	}
-	if got.Rows[1]["name"] != nil {
-		t.Errorf("Rows[1][name] = %v, want nil", got.Rows[1]["name"])
+	// The column is present and null, which a cell holds as the null it is
+	// rather than as an absent key.
+	if cell := got.Rows[1]["name"]; cell.Kind() != 'n' {
+		t.Errorf("Rows[1][name] = %s, want null", cell)
 	}
 
 	f.mu.Lock()
@@ -550,14 +550,14 @@ func TestGetQueryOptions(t *testing.T) {
 		t.Fatalf("GetQuery() error = %v", err)
 	}
 	want := []redash.QueryParameter{
-		{Name: "days", Type: "number", Value: json.Number("7")},
-		{Name: "team", Type: "text", Value: "core"},
-		{Name: "since", Type: "date", Value: nil},
+		{Name: "days", Type: "number", Value: jsontext.Value(`7`)},
+		{Name: "team", Type: "text", Value: jsontext.Value(`"core"`)},
+		{Name: "since", Type: "date", Value: jsontext.Value(`null`)},
 	}
 	if !reflect.DeepEqual(q.Options.Parameters, want) {
 		t.Errorf("Options.Parameters = %+v, want %+v", q.Options.Parameters, want)
 	}
-	if want := json.RawMessage("true"); !reflect.DeepEqual(q.Options.Extra["apply_auto_limit"], want) {
+	if want := jsontext.Value("true"); !reflect.DeepEqual(q.Options.Extra["apply_auto_limit"], want) {
 		t.Errorf("Options.Extra[apply_auto_limit] = %s, want %s",
 			q.Options.Extra["apply_auto_limit"], want)
 	}
@@ -602,8 +602,8 @@ func TestGetQueryNullOptions(t *testing.T) {
 // replaces options wholesale, so everything read has to come back byte for
 // byte unless the caller changed it. That covers keys rdsh has no field for
 // (apply_auto_limit, enumOptions), parameter types it cannot express (enum),
-// and a default too large for a float64 — which is what a decoding that
-// dropped UseNumber would silently round.
+// and a default too large for a float64, which survives because the value
+// is held as the digits it was written with rather than decoded.
 func TestQueryOptionsRoundTrip(t *testing.T) {
 	options := map[string]any{
 		"apply_auto_limit": true,
@@ -630,22 +630,22 @@ func TestQueryOptionsRoundTrip(t *testing.T) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	sent, ok := decodeNumeric(t, f.updatedRaw).(map[string]any)
-	if !ok {
-		t.Fatalf("update body = %s, want a JSON object", f.updatedRaw)
+	var sent map[string]jsontext.Value
+	if err := json.Unmarshal(f.updatedRaw, &sent); err != nil {
+		t.Fatalf("update body = %s, want a JSON object: %v", f.updatedRaw, err)
 	}
-	want := numeric(t, options)
-	if !reflect.DeepEqual(sent["options"], want) {
-		t.Errorf("sent options = %#v, want %#v", sent["options"], want)
+	if got, want := canonical(t, sent["options"]), canonicalOf(t, options); got != want {
+		t.Errorf("sent options = %s, want %s", got, want)
 	}
 }
 
-// TestQueryOptionsNormalisesNullValue names the one way a round trip does
-// not reproduce what it read: a default stored as an explicit null comes
-// back with the key absent. Redash reads a definition's default with
-// .get("value") when it hashes the query, so both spellings mean the same
-// "no default" to it — which is what makes the normalisation safe.
-func TestQueryOptionsNormalisesNullValue(t *testing.T) {
+// TestQueryOptionsKeepsNullValue covers a default stored as an explicit
+// null. It round-trips as the null it was rather than being flattened into
+// an absent key: what null means — no default — is a reading of the value,
+// and this package hands the value on rather than interpreting it. Redash
+// reads a definition's default with .get("value") when it hashes the query,
+// so both spellings mean the same thing to it either way.
+func TestQueryOptionsKeepsNullValue(t *testing.T) {
 	f := &fakeRedash{t: t, queryOptions: map[string]any{
 		"parameters": []map[string]any{{"name": "since", "type": "date", "value": nil}},
 	}}
@@ -663,35 +663,35 @@ func TestQueryOptionsNormalisesNullValue(t *testing.T) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	want := `{"options":{"parameters":[{"name":"since","type":"date"}]}}`
+	want := `{"options":{"parameters":[{"name":"since","type":"date","value":null}]}}`
 	if got := string(f.updatedRaw); got != want {
 		t.Errorf("updated query body = %s, want %s", got, want)
 	}
 }
 
-// numeric renders a want value the way UseNumber decoding reads it back, so
-// a round-trip comparison is written once as the options the fake served.
-func numeric(t *testing.T, v any) any {
+// canonical puts JSON in one fixed spelling — object members sorted, all the
+// way down — so two encodings of the same data compare as text. Comparing
+// text rather than decoded Go values is what makes a default too large for a
+// float64 comparable at all: the number keeps the digits it was written
+// with instead of passing through one.
+func canonical(t *testing.T, data []byte) string {
+	t.Helper()
+	value := jsontext.Value(data)
+	if err := value.Format(jsontext.ReorderRawObjects(true)); err != nil {
+		t.Fatalf("canonicalise %s: %v", data, err)
+	}
+	return string(value)
+}
+
+// canonicalOf renders a want value the same way, so a round-trip comparison
+// is written once as the options the fake served.
+func canonicalOf(t *testing.T, v any) string {
 	t.Helper()
 	data, err := json.Marshal(v)
 	if err != nil {
 		t.Fatalf("marshal want: %v", err)
 	}
-	return decodeNumeric(t, data)
-}
-
-// decodeNumeric reads JSON the way the client does, keeping numbers as the
-// text they were written with — which is what makes a default too large for
-// a float64 comparable at all.
-func decodeNumeric(t *testing.T, data []byte) any {
-	t.Helper()
-	var out any
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	if err := dec.Decode(&out); err != nil {
-		t.Fatalf("decode %s: %v", data, err)
-	}
-	return out
+	return canonical(t, data)
 }
 
 // TestQueryOptionsOmitsEmptyKeys keeps a definition rdsh composes from
@@ -727,7 +727,7 @@ func TestQueryOptionsKeepsAnEmptyDefault(t *testing.T) {
 	defer srv.Close()
 
 	options := redash.QueryOptions{Parameters: []redash.QueryParameter{
-		{Name: "note", Title: "note", Type: "text", Value: ""},
+		{Name: "note", Title: "note", Type: "text", Value: jsontext.Value(`""`)},
 	}}
 	if _, err := newTestClient(srv, "k").UpdateQuery(t.Context(), 7,
 		redash.QueryUpdate{Options: &options}); err != nil {
@@ -751,7 +751,7 @@ func TestCreateQueryOptions(t *testing.T) {
 	defer srv.Close()
 
 	options := redash.QueryOptions{Parameters: []redash.QueryParameter{
-		{Name: "days", Title: "days", Type: "number", Value: json.Number("7")},
+		{Name: "days", Title: "days", Type: "number", Value: jsontext.Value(`7`)},
 	}}
 	if _, err := newTestClient(srv, "k").CreateQuery(t.Context(), redash.NewQuery{
 		Name: "saved", Query: "SELECT {{days}}", DataSourceID: 3, Options: &options,
@@ -795,7 +795,7 @@ func TestRefreshQuery(t *testing.T) {
 	defer srv.Close()
 
 	got, err := newTestClient(srv, "k").RefreshQuery(t.Context(), 7,
-		map[string]any{"days": json.Number("7"), "team": "core"})
+		map[string]jsontext.Value{"days": jsontext.Value(`7`), "team": jsontext.Value(`"core"`)})
 	if err != nil {
 		t.Fatalf("RefreshQuery() error = %v", err)
 	}
@@ -1229,9 +1229,9 @@ func TestCreateVisualization(t *testing.T) {
 		QueryID: 7,
 		Type:    "CHART",
 		Name:    "daily",
-		Options: map[string]json.RawMessage{
-			"globalSeriesType": json.RawMessage(`"line"`),
-			"columnMapping":    json.RawMessage(`{"day":"x","count":"y"}`),
+		Options: map[string]jsontext.Value{
+			"globalSeriesType": jsontext.Value(`"line"`),
+			"columnMapping":    jsontext.Value(`{"day":"x","count":"y"}`),
 		},
 	})
 	if err != nil {

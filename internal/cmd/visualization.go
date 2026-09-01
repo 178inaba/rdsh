@@ -2,7 +2,8 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"maps"
@@ -31,6 +32,12 @@ const (
 	columnRoleX         = "x"
 	columnRoleY         = "y"
 )
+
+// mappingOptions fix the order columnMapping's members are written in. It is
+// keyed by column name, so its Go map would otherwise be serialised in a
+// different order each run — and these bytes are both stored on the
+// visualization and read back out by `rdsh query show`.
+var mappingOptions = json.Deterministic(true)
 
 // chartTypes is the --type values a typed chart takes, in the order the help
 // and the errors list them, each paired with the value viz-lib renders from.
@@ -504,7 +511,7 @@ func chartSeriesType(name string) (string, error) {
 // setting left out keeps whatever default that Redash version has — where
 // writing them out would freeze today's defaults into the chart and grow the
 // surface that can drift out of step with the schema.
-func chartOptions(seriesType, x string, ys []string) (map[string]json.RawMessage, error) {
+func chartOptions(seriesType, x string, ys []string) (map[string]jsontext.Value, error) {
 	mapping := make(map[string]string, len(ys)+1)
 	mapping[x] = columnRoleX
 	for _, y := range ys {
@@ -514,11 +521,13 @@ func chartOptions(seriesType, x string, ys []string) (map[string]json.RawMessage
 	if err := checkAxesSurvive(nil, mapping); err != nil {
 		return nil, err
 	}
-	// Both values are composed here from strings, so neither can fail to
-	// encode and the errors json.Marshal declares cannot occur.
+	// Encoding a string can fail on one that is not valid UTF-8, which JSON
+	// cannot hold. Neither of these is: the type comes from the --type enum,
+	// and every column name has already been matched against the query's
+	// result by validateChartColumns, whose own text arrived as valid JSON.
 	seriesJSON, _ := json.Marshal(seriesType)
-	mappingJSON, _ := json.Marshal(mapping)
-	return map[string]json.RawMessage{
+	mappingJSON, _ := json.Marshal(mapping, mappingOptions)
+	return map[string]jsontext.Value{
 		globalSeriesTypeKey: seriesJSON,
 		columnMappingKey:    mappingJSON,
 	}, nil
@@ -587,9 +596,9 @@ func columnFor(mapping map[string]string, role string) string {
 // request carries and leaves the rest, so an edit has to hand back what it
 // never meant to touch — which is why this works from what was just read
 // rather than composing a fresh object the way create does.
-func patchChartOptions(stored map[string]json.RawMessage, seriesType, x string,
-	ys []string) (map[string]json.RawMessage, error) {
-	options := make(map[string]json.RawMessage, len(stored)+2)
+func patchChartOptions(stored map[string]jsontext.Value, seriesType, x string,
+	ys []string) (map[string]jsontext.Value, error) {
+	options := make(map[string]jsontext.Value, len(stored)+2)
 	maps.Copy(options, stored)
 	if seriesType != "" {
 		seriesJSON, err := json.Marshal(seriesType)
@@ -637,7 +646,7 @@ func patchChartOptions(stored map[string]json.RawMessage, seriesType, x string,
 		return nil, err
 	}
 
-	mappingJSON, err := json.Marshal(mapping)
+	mappingJSON, err := json.Marshal(mapping, mappingOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -704,7 +713,7 @@ func validateChartColumns(ctx context.Context, client *redash.Client, q *redash.
 // what the keys mean is the front end's business, and refusing what rdsh
 // does not recognise would defeat the point of the escape hatch. Each key is
 // kept as it was written, so a number keeps the text it was given.
-func readOptionsFile(path string) (map[string]json.RawMessage, error) {
+func readOptionsFile(path string) (map[string]jsontext.Value, error) {
 	if path == "" {
 		return nil, nil
 	}
@@ -712,7 +721,7 @@ func readOptionsFile(path string) (map[string]json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	var options map[string]json.RawMessage
+	var options map[string]jsontext.Value
 	if err := json.Unmarshal(data, &options); err != nil {
 		return nil, fmt.Errorf("--options-file %s is not a JSON object: %w", path, err)
 	}

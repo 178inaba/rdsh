@@ -1,7 +1,8 @@
 package cmd
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"regexp"
 	"strings"
@@ -239,7 +240,10 @@ func mergeParamDefinitions(existing []redash.QueryParameter,
 			p.Regex, p.Type = f.regex, paramTypeTextPattern
 		}
 		if f.hasValue {
-			p.Value = f.value
+			// Flag text becomes the JSON string it stands for; a numeric
+			// parameter's default is converted to a JSON number later, by
+			// paramValue, which is where the type is known.
+			p.Value = rawJSON(f.value)
 		}
 		if p.Type == paramTypeTextPattern && p.Regex == "" {
 			return nil, fmt.Errorf("%s is a %s parameter with no pattern; pass --param-regex %s=<pattern>",
@@ -345,27 +349,32 @@ func checkParamValues(params []redash.QueryParameter, set *paramFlagSet) error {
 // is the only case where it is converted — a number is sent as JSON's, the
 // way the UI stores it, so the query hashes to the same text either tool
 // wrote it.
-func paramValue(typ, regex string, value any, fromFlag bool) (any, error) {
+func paramValue(typ, regex string, value jsontext.Value, fromFlag bool) (jsontext.Value, error) {
 	// A definition with no default is a definition this command has nothing
 	// to check: it is the state --param-default exists to leave, and a type
 	// change alone does not create one.
-	if value == nil {
+	if noDefault(value) {
 		return nil, nil
 	}
-	if typ == paramTypeNumber {
-		if number, ok := value.(json.Number); ok {
-			return number, nil
-		}
+	if typ == paramTypeNumber && value.Kind() == '0' {
+		return value, nil
 	}
-	text, ok := value.(string)
-	if !ok {
+	// Every remaining type is checked against text, so a default stored as
+	// anything else — an object, as a date range's is — is one this command
+	// has nothing to say about.
+	if value.Kind() != '"' {
 		return nil, fmt.Errorf("the stored default is not a value rdsh can check against %s; "+
 			"edit it in the Redash UI", typ)
 	}
+	// Unquoting cannot fail on a value the decoder already read as a string.
+	unquoted, _ := jsontext.AppendUnquote(nil, value)
+	text := string(unquoted)
 
+	// Every arm below checks the text and leaves the value as it stands. The
+	// one conversion in the function is the numeric default a flag supplied,
+	// which is sent as JSON's number the way the UI stores it.
 	switch typ {
 	case paramTypeText:
-		return text, nil
 	case paramTypeTextPattern:
 		// Redash matches the whole value (re.fullmatch), which Go has no
 		// call for; anchoring the pattern as a group is the same thing and
@@ -377,30 +386,49 @@ func paramValue(typ, regex string, value any, fromFlag bool) (any, error) {
 		if !matcher.MatchString(text) {
 			return nil, fmt.Errorf("the default %q does not match %s in full", text, regex)
 		}
-		return text, nil
 	case paramTypeNumber:
 		// Judged as JSON rather than with strconv so what passes is exactly
-		// what can be sent as a JSON number: no infinities, no leading or
-		// trailing space, and a large integer kept as the text it was
-		// written with rather than rounded through a float64.
-		var number json.Number
-		if err := json.Unmarshal([]byte(text), &number); err != nil {
+		// what can be sent as a JSON number: no infinities, and a large
+		// integer kept as the text it was written with rather than rounded
+		// through a float64. Reading it as a value rather than as text also
+		// trims the space a flag may carry, so n=" 42 " is stored as 42.
+		//
+		// The kind check is what makes it a number rather than merely valid
+		// JSON: true, null and [1] all parse, and none is a numeric default.
+		var number jsontext.Value
+		if err := json.Unmarshal([]byte(text), &number); err != nil || number.Kind() != '0' {
 			return nil, fmt.Errorf("the default %q is not a number", text)
 		}
-		if !fromFlag {
-			return text, nil
+		if fromFlag {
+			return number, nil
 		}
-		return number, nil
+	default:
+		layout, ok := dateParamLayouts[typ]
+		if !ok {
+			return nil, fmt.Errorf("rdsh cannot check a default of type %s", describeParamType(typ))
+		}
+		if _, err := time.Parse(layout, text); err != nil {
+			return nil, fmt.Errorf("the default %q is not a %s written as %s", text, typ, layout)
+		}
 	}
+	return value, nil
+}
 
-	layout, ok := dateParamLayouts[typ]
-	if !ok {
-		return nil, fmt.Errorf("rdsh cannot check a default of type %s", describeParamType(typ))
-	}
-	if _, err := time.Parse(layout, text); err != nil {
-		return nil, fmt.Errorf("the default %q is not a %s written as %s", text, typ, layout)
-	}
-	return text, nil
+// noDefault reports whether a stored default says "no default". The key
+// being absent is one spelling of that and an explicit null is the other:
+// Redash reads the value with .get, so the two mean the same thing to it.
+// Deciding that here rather than while decoding is what lets a null the
+// server sent survive being written back as the null it was.
+func noDefault(value jsontext.Value) bool {
+	return len(value) == 0 || value.Kind() == 'n'
+}
+
+// rawJSON encodes a value this package composed itself into the raw JSON
+// the redash types hold. Everything passed here is a Go scalar, so encoding
+// it cannot fail.
+func rawJSON(v any) jsontext.Value {
+	encoded, _ := json.Marshal(v)
+	return encoded
 }
 
 // placeholder is one parameter reference found in a query's SQL.
