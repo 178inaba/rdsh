@@ -1,5 +1,10 @@
 # Changelog
 
+## [v1.0.3](https://github.com/178inaba/rdsh/compare/v1.0.2...v1.0.3) - 2026-09-01
+
+- Enable revive and adopt the newer standard-library forms Go 1.27 offers by @178inaba in https://github.com/178inaba/rdsh/pull/79
+- Port the JSON handling to encoding/json/v2 by @178inaba in https://github.com/178inaba/rdsh/pull/82
+
 ## [v1.0.2](https://github.com/178inaba/rdsh/compare/v1.0.1...v1.0.2) - 2026-08-31
 
 - Mint the release token with client-id, not the deprecated app-id by @178inaba in https://github.com/178inaba/rdsh/pull/73
