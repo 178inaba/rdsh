@@ -84,11 +84,9 @@ services:
     environment:
       POSTGRES_PASSWORD: redash
     volumes:
-      # The parent, not .../data: from 18 the image keeps the cluster in a
-      # major-version subdirectory and its entrypoint refuses to start with a
-      # mount at the old path. Reverting the tag alone would strand the
-      # cluster: 17 declares `VOLUME /var/lib/postgresql/data`, which shadows
-      # a parent mount with an anonymous volume --reset cannot remove.
+      # The parent, not .../data: 18 keeps the cluster in a major-version
+      # subdirectory and refuses a mount at the old path, while 17 shadows a
+      # parent mount with an anonymous volume --reset cannot remove.
       - redash-postgres:/var/lib/postgresql
       - ./scripts/redash-seed.sql:/docker-entrypoint-initdb.d/10-redash-seed.sql:ro
     healthcheck:
