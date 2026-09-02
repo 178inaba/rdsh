@@ -1,5 +1,12 @@
 # Changelog
 
+## [v1.0.4](https://github.com/178inaba/rdsh/compare/v1.0.3...v1.0.4) - 2026-09-02
+
+### Changes
+- Pin the npx skills install command to the stable tag by @178inaba in https://github.com/178inaba/rdsh/pull/83
+- Move the sandbox postgres volume to /var/lib/postgresql and bump the image to 18-alpine by @178inaba in https://github.com/178inaba/rdsh/pull/89
+- Take the release body from GitHub's generated notes, with dependency updates last by @178inaba in https://github.com/178inaba/rdsh/pull/92
+
 ## [v1.0.3](https://github.com/178inaba/rdsh/compare/v1.0.2...v1.0.3) - 2026-09-01
 
 - Enable revive and adopt the newer standard-library forms Go 1.27 offers by @178inaba in https://github.com/178inaba/rdsh/pull/79
