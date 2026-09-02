@@ -79,12 +79,17 @@ services:
   # The official compose uses pgautoupgrade; plain postgres is deliberate here
   # because scripts/redash-up.sh --reset replaces an in-place major upgrade.
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     profiles: [redash]
     environment:
       POSTGRES_PASSWORD: redash
     volumes:
-      - redash-postgres:/var/lib/postgresql/data
+      # The parent, not .../data: from 18 the image keeps the cluster in a
+      # major-version subdirectory and its entrypoint refuses to start with a
+      # mount at the old path. Reverting the tag alone would strand the
+      # cluster: 17 declares `VOLUME /var/lib/postgresql/data`, which shadows
+      # a parent mount with an anonymous volume --reset cannot remove.
+      - redash-postgres:/var/lib/postgresql
       - ./scripts/redash-seed.sql:/docker-entrypoint-initdb.d/10-redash-seed.sql:ro
     healthcheck:
       # -h forces a TCP check: during initdb the temporary server listens on
