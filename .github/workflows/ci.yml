@@ -35,26 +35,26 @@ jobs:
       # A break in any of these reddens nothing — the plugin stops updating,
       # or the skill drifts ahead of the binary — so it surfaces far later
       # than what the checks below catch.
-      # The `// ""` and `type` defences are load-bearing: without them a
-      # manifest that lost its version, and a source reverted to the string
-      # "./", make jq throw and exit 5 rather than fail as the assertion.
+      # `// ""` and the object check are defensive: they make a manifest that
+      # lost its version, and a source reverted to the string "./", fail the
+      # assertion that names them rather than throw inside jq.
       - name: Assert the plugin distribution wiring
         run: |
-          jq -e '(.version // "") | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' .claude-plugin/plugin.json > /dev/null \
-            || { echo "::error::.claude-plugin/plugin.json must declare a bare semver version, the form tagpr writes through versionFile"; exit 1; }
-          jq -e '.plugins[0] | has("version") | not' .claude-plugin/marketplace.json > /dev/null \
-            || { echo "::error::the .claude-plugin/marketplace.json plugin entry must not declare a version; Claude Code reads the one in plugin.json"; exit 1; }
-          jq -e '.plugins[0].source | type == "object" and .ref == "stable"' .claude-plugin/marketplace.json > /dev/null \
-            || { echo "::error::the .claude-plugin/marketplace.json plugin entry's source must be a source object pinned to ref stable, not a path"; exit 1; }
-          [ "$(git config -f .tagpr tagpr.versionFile)" = .claude-plugin/plugin.json ] \
+          jq -e '(.version // "") | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' .claude-plugin/plugin.json >/dev/null \
+            || { echo "::error::.claude-plugin/plugin.json needs a bare semver version, the form tagpr writes through versionFile"; exit 1; }
+          jq -e '.plugins[0] | has("version") | not' .claude-plugin/marketplace.json >/dev/null \
+            || { echo "::error::the .claude-plugin/marketplace.json plugins entry must not carry a version; Claude Code always reads the manifest's, so a stale manifest would mask it"; exit 1; }
+          jq -e '.plugins[0].source | type == "object" and .ref == "stable"' .claude-plugin/marketplace.json >/dev/null \
+            || { echo "::error::the .claude-plugin/marketplace.json plugins entry's source must be an object resolving through ref \"stable\""; exit 1; }
+          [[ "$(git config -f .tagpr tagpr.versionFile)" == .claude-plugin/plugin.json ]] \
             || { echo "::error::.tagpr must set versionFile to .claude-plugin/plugin.json, or tagpr stops bumping the version that stable ships"; exit 1; }
-          grep -q 'npx skills add https://github.com/178inaba/rdsh/tree/stable' README.md \
-            || { echo "::error::README.md's npx skills install command must pin the stable tag"; exit 1; }
+          install_url="https://github.com/$(jq -r '.plugins[0].source.repo' .claude-plugin/marketplace.json)/tree/$(jq -r '.plugins[0].source.ref' .claude-plugin/marketplace.json)"
+          grep -qxF "npx skills add $install_url" README.md \
+            || { echo "::error::README.md must carry the line 'npx skills add $install_url', the URL form of the install command; the comment beside it in README.md records why"; exit 1; }
       # golangci-lint-action resolves an empty tag — and a `latest` tag — to
       # whatever the newest release is, so a compose.yaml that lost its pin
       # would leave this job green and silently unpinned. Any other malformed
-      # value already makes the action throw. This needs nothing but the
-      # checkout, so it runs before the toolchain install.
+      # value already makes the action throw.
       - name: Read the golangci-lint version from compose.yaml
         id: version
         run: |
@@ -105,9 +105,6 @@ jobs:
             sleep 15
           done
           exit 1
-      # The script prints the two export lines and nothing else, so eval is
-      # what points this shell at the sandbox — and $GITHUB_ENV is what
-      # carries them on, since the step below runs in a shell of its own.
       - name: Start the Redash sandbox
         run: |
           # Assigned before it is evaluated, because the exit status of a
@@ -128,8 +125,6 @@ jobs:
       # Go input at all, so a cache restored from an earlier run would report a
       # pass that never reached Redash.
       - run: go test -tags e2e -count=1 ./e2e/
-      # Without this a red run says which assertion failed and nothing about
-      # what the sandbox was doing when it did.
       - name: Dump the sandbox logs
         if: failure()
         run: docker compose --profile redash logs
