@@ -2,17 +2,14 @@ name: Dependabot auto-merge
 
 on: pull_request
 
-# Keyed on the ref, which is the pull request here, so a rebase supersedes
-# only its own pull request's run. Not cancelling is what release.yml settled
-# on for the same reason it applies here: the job below is a two-write
-# sequence, and a cancel landing between them leaves the pull request
-# approved with auto-merge never enabled. There are no runner minutes to
-# reclaim by cancelling two API calls.
+# Not cancelling, unlike ci.yml: the job below is a two-write sequence, and a
+# cancel landing between them leaves the pull request approved with auto-merge
+# never enabled.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
-# Read-only: both writes below are made with the App token, not with this.
+# Read-only: the writes below are made with the App token, not with this.
 permissions:
   contents: read
 
@@ -20,38 +17,30 @@ jobs:
   auto-merge:
     name: Auto-merge
     runs-on: ubuntu-latest
-    # The actor, not the pull request's author: a commit a person pushes onto
-    # a Dependabot branch fires synchronize with that person as the actor, and
-    # approving there would put their name on a review they did not give. The
-    # approval and auto-merge an earlier run gave survive that push — the
-    # ruleset does not dismiss stale reviews, and a push from someone with
-    # write access does not clear auto-merge — so taking a Dependabot pull
-    # request over means turning auto-merge off by hand.
+    # The actor, not the pull request's author: a commit a person pushes onto a
+    # Dependabot branch fires synchronize with that person as the actor, and
+    # approving there would put their name on a review they did not give.
     if: github.actor == 'dependabot[bot]'
     steps:
-      # Not GITHUB_TOKEN, for two reasons. The ruleset requires an approving
-      # review and "Allow GitHub Actions to create and approve pull requests"
-      # is off, so GITHUB_TOKEN cannot approve at all. And a merge that
-      # auto-merge performs on GITHUB_TOKEN's behalf emits no push event, so
-      # release.yml would not run and tagpr's release pull request would go
-      # stale until the next human push.
+      # Not GITHUB_TOKEN: the ruleset requires an approving review and "Allow
+      # GitHub Actions to create and approve pull requests" is off, so it
+      # cannot approve at all; and a merge auto-merge performs on its behalf
+      # emits no push event, which would leave release.yml unrun and tagpr's
+      # release pull request stale.
       #
-      # Runs triggered by Dependabot see Dependabot secrets rather than Actions
-      # secrets, so the App's private key is registered under both names.
-      # Without the Dependabot one this step is where the workflow fails.
-      #
-      # release.yml's owner / repositories inputs are left off deliberately:
-      # this workflow touches nothing but the pull request it ran for.
+      # Dependabot-triggered runs see Dependabot secrets rather than Actions
+      # secrets, so the private key is registered under both names. Without the
+      # Dependabot one this step is where the workflow fails.
       - uses: actions/create-github-app-token@v3
         id: app-token
         with:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-      # No checkout above, so nothing from the pull request head executes here.
+      # No checkout anywhere above, so nothing from the pull request head
+      # executes here.
       #
-      # --merge because the ruleset allows no other merge method. There is
-      # deliberately no update-type filter on top: the required checks are the
-      # gate, and E2E rejected the postgres 18 bump on its own.
+      # --merge because the ruleset allows no other method, and no update-type
+      # filter on top of it because the required checks are the gate.
       - env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
