@@ -1,0 +1,54 @@
+name: Dependabot auto-merge
+
+on: pull_request
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Read-only: both writes below are made with the App token, not with this.
+permissions:
+  contents: read
+
+jobs:
+  auto-merge:
+    name: Auto-merge
+    runs-on: ubuntu-latest
+    # The actor, not the pull request's author: a commit a person pushes onto
+    # a Dependabot branch fires synchronize with that person as the actor, and
+    # approving there would put their name on a review they did not give. An
+    # approval and auto-merge from an earlier run survive that push — the
+    # ruleset does not dismiss stale reviews, and a push from someone with
+    # write access does not clear auto-merge — so a person who takes a
+    # Dependabot pull request over turns auto-merge off themselves.
+    if: github.actor == 'dependabot[bot]'
+    steps:
+      # Not GITHUB_TOKEN, for two reasons. The ruleset requires an approving
+      # review and "Allow GitHub Actions to create and approve pull requests"
+      # is off, so GITHUB_TOKEN cannot approve at all. And a merge that
+      # auto-merge performs on GITHUB_TOKEN's behalf emits no push event, so
+      # release.yml would not run and tagpr's release pull request would go
+      # stale until the next human push.
+      #
+      # Runs triggered by Dependabot see Dependabot secrets rather than Actions
+      # secrets, so the App's private key is registered under both names.
+      # Without the Dependabot one this step is where the workflow fails.
+      #
+      # release.yml's owner / repositories inputs are deliberately absent: this
+      # workflow touches nothing but the pull request it was triggered for.
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      # No checkout above, so nothing from the pull request head executes here.
+      #
+      # --merge because the ruleset allows no other merge method. Auto-merge
+      # leaves the required checks as the whole gate: a major that breaks CI
+      # stays open for a person, and one that passes merges like any other.
+      - env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr review --approve "$PR_URL"
+          gh pr merge --auto --merge "$PR_URL"
