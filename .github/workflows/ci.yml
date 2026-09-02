@@ -35,11 +35,9 @@ jobs:
       # A break in any of these reddens nothing — the plugin stops updating,
       # or the skill drifts ahead of the binary — so it surfaces far later
       # than what the checks below catch.
-      # The `|| { …; exit 1; }` on each is what reports a break as the
-      # assertion rather than as a bare non-zero exit under the shell's -e,
-      # and the `// ""` and the object check keep jq from throwing before it:
-      # a manifest that lost its version, and a source reverted to the string
-      # "./", both fail as the assertion that names them.
+      # `// ""` and the object check are defensive: they make a manifest that
+      # lost its version, and a source reverted to the string "./", fail the
+      # assertion that names them rather than throw inside jq.
       - name: Assert the plugin distribution wiring
         run: |
           jq -e '(.version // "") | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' .claude-plugin/plugin.json >/dev/null \
@@ -56,8 +54,7 @@ jobs:
       # golangci-lint-action resolves an empty tag — and a `latest` tag — to
       # whatever the newest release is, so a compose.yaml that lost its pin
       # would leave this job green and silently unpinned. Any other malformed
-      # value already makes the action throw. This needs nothing but the
-      # checkout, so it runs before the toolchain install.
+      # value already makes the action throw.
       - name: Read the golangci-lint version from compose.yaml
         id: version
         run: |
@@ -108,9 +105,6 @@ jobs:
             sleep 15
           done
           exit 1
-      # The script prints the two export lines and nothing else, so eval is
-      # what points this shell at the sandbox — and $GITHUB_ENV is what
-      # carries them on, since the step below runs in a shell of its own.
       - name: Start the Redash sandbox
         run: |
           # Assigned before it is evaluated, because the exit status of a
@@ -131,8 +125,6 @@ jobs:
       # Go input at all, so a cache restored from an earlier run would report a
       # pass that never reached Redash.
       - run: go test -tags e2e -count=1 ./e2e/
-      # Without this a red run says which assertion failed and nothing about
-      # what the sandbox was doing when it did.
       - name: Dump the sandbox logs
         if: failure()
         run: docker compose --profile redash logs
