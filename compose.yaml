@@ -79,7 +79,7 @@ services:
   # The official compose uses pgautoupgrade; plain postgres is deliberate here
   # because scripts/redash-up.sh --reset replaces an in-place major upgrade.
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     profiles: [redash]
     environment:
       POSTGRES_PASSWORD: redash
