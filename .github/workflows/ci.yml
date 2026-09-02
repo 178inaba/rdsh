@@ -35,10 +35,11 @@ jobs:
       # A break in any of these reddens nothing — the plugin stops updating,
       # or the skill drifts ahead of the binary — so it surfaces far later
       # than what the checks below catch.
-      # The `// ""`, the object check and the `||` guard on each are what keep
-      # a break reported as the assertion rather than as a jq or shell error:
+      # The `|| { …; exit 1; }` on each is what reports a break as the
+      # assertion rather than as a bare non-zero exit under the shell's -e,
+      # and the `// ""` and the object check keep jq from throwing before it:
       # a manifest that lost its version, and a source reverted to the string
-      # "./", both stay inside the assertion that names them.
+      # "./", both fail as the assertion that names them.
       - name: Assert the plugin distribution wiring
         run: |
           jq -e '(.version // "") | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")' .claude-plugin/plugin.json >/dev/null \
