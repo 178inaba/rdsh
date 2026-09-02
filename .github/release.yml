@@ -1,4 +1,20 @@
+# Two consumers read this file: GitHub's release-notes generator, which
+# GoReleaser calls for the release body, and tagpr, which calls the same API
+# for CHANGELOG.md. A category added here changes both.
 changelog:
   exclude:
     labels:
       - tagpr
+  # A PR lands in the first category it matches, so excluding the dependencies
+  # label from the catch-all is what pushes Dependabot PRs into the category
+  # below.
+  categories:
+    - title: Changes
+      labels:
+        - "*"
+      exclude:
+        labels:
+          - dependencies
+    - title: Dependency updates
+      labels:
+        - dependencies
