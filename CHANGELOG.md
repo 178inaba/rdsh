@@ -1,5 +1,14 @@
 # Changelog
 
+## [v1.0.5](https://github.com/178inaba/rdsh/compare/v1.0.4...v1.0.5) - 2026-09-02
+
+### Changes
+- Approve and auto-merge Dependabot pull requests once the required checks pass by @178inaba in https://github.com/178inaba/rdsh/pull/94
+- Derive the README install URL from the marketplace entry and share the step with the sibling CLIs by @178inaba in https://github.com/178inaba/rdsh/pull/95
+### Dependency updates
+- Bump redis from 7-alpine to 8-alpine by @dependabot[bot] in https://github.com/178inaba/rdsh/pull/86
+- Bump golangci/golangci-lint from v2.13.1 to v2.13.2 by @dependabot[bot] in https://github.com/178inaba/rdsh/pull/85
+
 ## [v1.0.4](https://github.com/178inaba/rdsh/compare/v1.0.3...v1.0.4) - 2026-09-02
 
 ### Changes
