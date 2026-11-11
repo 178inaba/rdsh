@@ -1,5 +1,16 @@
 # Changelog
 
+## [v1.0.6](https://github.com/178inaba/rdsh/compare/v1.0.5...v1.0.6) - 2026-11-11
+
+### Changes
+- Generate the Homebrew cask's quarantine hook as postflight_steps by @178inaba in https://github.com/178inaba/rdsh/pull/104
+### Dependency updates
+- Bump golang.org/x/term from 0.45.0 to 0.46.0 by @dependabot[bot] in https://github.com/178inaba/rdsh/pull/97
+- Bump golangci/golangci-lint from v2.13.2 to v2.14.0 by @dependabot[bot] in https://github.com/178inaba/rdsh/pull/100
+- Bump redash/redash from 26.3.0 to 26.9.0 by @dependabot[bot] in https://github.com/178inaba/rdsh/pull/99
+- Bump golangci/golangci-lint from v2.14.0 to v2.15.0 by @dependabot[bot] in https://github.com/178inaba/rdsh/pull/102
+- Bump golang.org/x/term from 0.46.0 to 0.47.0 by @dependabot[bot] in https://github.com/178inaba/rdsh/pull/101
+
 ## [v1.0.5](https://github.com/178inaba/rdsh/compare/v1.0.4...v1.0.5) - 2026-09-02
 
 ### Changes
