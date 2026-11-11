@@ -50,7 +50,7 @@ homebrew_casks:
       post:
         # The binary is neither signed nor notarized, so Gatekeeper refuses
         # to run what curl downloaded until the quarantine flag is off.
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/{{ .ProjectName }}"]
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/{{ .ProjectName }}"]
           end
