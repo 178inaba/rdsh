@@ -44,7 +44,7 @@ services:
 
   server:
     <<: *redash
-    image: redash/redash:26.3.0
+    image: redash/redash:26.9.0
     command: server
     # Bound to loopback: the admin password and API key are fixed values in
     # the clear, and Redash reaches whatever host a data source names, so this
@@ -57,7 +57,7 @@ services:
 
   scheduler:
     <<: *redash
-    image: redash/redash:26.3.0
+    image: redash/redash:26.9.0
     command: scheduler
 
   # The official compose splits these queues across three worker services; one
@@ -65,7 +65,7 @@ services:
   # list, or `rdsh run` waits out its --timeout and gets nothing.
   worker:
     <<: *redash
-    image: redash/redash:26.3.0
+    image: redash/redash:26.9.0
     command: worker
     environment:
       <<: *redash-env
