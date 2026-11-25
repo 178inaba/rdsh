@@ -1,5 +1,10 @@
 # Changelog
 
+## [v1.0.7](https://github.com/178inaba/rdsh/compare/v1.0.6...v1.0.7) - 2026-11-25
+
+### Dependency updates
+- Bump golang.org/x/term from 0.47.0 to 0.48.0 by @dependabot[bot] in https://github.com/178inaba/rdsh/pull/107
+
 ## [v1.0.6](https://github.com/178inaba/rdsh/compare/v1.0.5...v1.0.6) - 2026-11-11
 
 ### Changes
